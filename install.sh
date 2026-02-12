@@ -486,6 +486,9 @@ WEZCLD_EOF
 # Make scripts executable
 chmod +x "$INSTALL_DIR/bin/wezcld" "$INSTALL_DIR/bin/tmux" "$INSTALL_DIR/lib/pane-map.sh"
 
+# Remove old symlinks/files before creating wrappers
+rm -f "$BIN_DIR/wezcld" "$BIN_DIR/tmux"
+
 # Create thin wrappers in BIN_DIR
 cat > "$BIN_DIR/wezcld" << 'WRAPPER_WEZCLD'
 #!/bin/sh
