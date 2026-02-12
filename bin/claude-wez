@@ -7,8 +7,14 @@ if [[ "${TERM_PROGRAM:-}" != "WezTerm" ]]; then
   exec claude "$@"
 fi
 
-# Resolve paths
-SHIM_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# Resolve paths (follow symlinks)
+SOURCE="$0"
+while [[ -L "$SOURCE" ]]; do
+  DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SHIM_DIR="$(cd "$(dirname "$SOURCE")/.." && pwd)"
 
 # Find real tmux binary (not our shim)
 REAL_TMUX=""
