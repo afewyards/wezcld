@@ -1,0 +1,326 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Guard / Passthrough - exit early if not in shim context
+if [[ "${TERM_PROGRAM:-}" != "WezTerm" ]] || [[ -z "${WEZTERM_SHIM_LIB:-}" ]]; then
+    real_tmux="${REAL_TMUX:-$(command -v tmux 2>/dev/null || true)}"
+    if [[ -n "$real_tmux" ]]; then
+        exec "$real_tmux" "$@"
+    fi
+    echo "tmux: command not found" >&2
+    exit 127
+fi
+
+# Source the pane-map library
+. "$WEZTERM_SHIM_LIB"
+
+# Handler: version
+handle_version() {
+    echo "tmux 3.4"
+}
+
+# Handler: display-message
+handle_display_message() {
+    local target=""
+    local format=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -t)
+                target="$2"
+                shift 2
+                ;;
+            -p)
+                format="$2"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    # Handle #{pane_id}
+    if [[ "$format" == *'#{pane_id}'* ]]; then
+        if [[ -n "$target" ]]; then
+            echo "$target"
+        else
+            echo "${TMUX_PANE:-}"
+        fi
+        return 0
+    fi
+
+    # Handle #{session_name}:#{window_index}
+    if [[ "$format" == *'#{session_name}:#{window_index}'* ]]; then
+        local tab_id="${WEZTERM_SHIM_TAB:-0}"
+        if [[ -n "$target" ]]; then
+            tab_id=$(tab_for_pane "$target")
+        fi
+        echo "wezterm:${tab_id}"
+        return 0
+    fi
+
+    echo "$format"
+}
+
+# Handler: split-window
+handle_split_window() {
+    local target="${TMUX_PANE:-}"
+    local direction="--bottom"
+    local size=""
+    local print_flag=false
+    local format="#{pane_id}"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -t)
+                target="$2"
+                shift 2
+                ;;
+            -h)
+                direction="--right"
+                shift
+                ;;
+            -v)
+                direction="--bottom"
+                shift
+                ;;
+            -l)
+                size="$2"
+                shift 2
+                ;;
+            -P)
+                print_flag=true
+                shift
+                ;;
+            -F)
+                format="$2"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    # Get WezTerm pane ID
+    local wez_pane
+    wez_pane=$(wez_from_tmux "$target")
+
+    # Build split-pane command
+    local split_cmd="wezterm cli split-pane $direction --pane-id $wez_pane"
+
+    # Add size if specified
+    if [[ -n "$size" ]]; then
+        # Strip % if present and add --percent
+        local percent="${size%\%}"
+        split_cmd="$split_cmd --percent $percent"
+    fi
+
+    # Execute and capture new WezTerm pane ID
+    local new_wez_pane
+    new_wez_pane=$($split_cmd)
+
+    # Get tab_id for the target
+    local tab_id
+    tab_id=$(tab_for_pane "$target")
+
+    # Allocate tmux ID
+    local new_tmux_id
+    new_tmux_id=$(alloc_pane_id "$new_wez_pane" "$tab_id")
+
+    # Print if requested
+    if [[ "$print_flag" == true ]]; then
+        echo "$new_tmux_id"
+    fi
+}
+
+# Handler: send-keys
+handle_send_keys() {
+    local target="${TMUX_PANE:-}"
+    local cmd_parts=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -t)
+                target="$2"
+                shift 2
+                ;;
+            *)
+                cmd_parts+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    # Get WezTerm pane ID
+    local wez_pane
+    wez_pane=$(wez_from_tmux "$target")
+
+    # Process command parts - strip trailing Enter/C-m
+    local has_enter=false
+    if [[ ${#cmd_parts[@]} -gt 0 ]]; then
+        local last_idx=$((${#cmd_parts[@]} - 1))
+        local last_part="${cmd_parts[$last_idx]}"
+        if [[ "$last_part" == "Enter" ]] || [[ "$last_part" == "C-m" ]]; then
+            has_enter=true
+            unset 'cmd_parts[$last_idx]'
+        fi
+    fi
+
+    # Join command parts
+    local cmd="${cmd_parts[*]}"
+
+    # Send to WezTerm
+    if [[ "$has_enter" == true ]]; then
+        printf '%s\n' "$cmd" | wezterm cli send-text --no-paste --pane-id "$wez_pane"
+    else
+        printf '%s' "$cmd" | wezterm cli send-text --no-paste --pane-id "$wez_pane"
+    fi
+}
+
+# Handler: list-panes
+handle_list_panes() {
+    local target="${WEZTERM_SHIM_TAB:-0}"
+    local format="#{pane_id}"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -t)
+                target="$2"
+                shift 2
+                ;;
+            -F)
+                format="$2"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    # Extract tab_id from target
+    local tab_id
+    if [[ "$target" == %* ]]; then
+        # Target is a pane ID
+        tab_id=$(tab_for_pane "$target")
+    elif [[ "$target" == wezterm:* ]]; then
+        # Target is session:window format
+        tab_id="${target#wezterm:}"
+    else
+        # Try to parse as number
+        tab_id="$target"
+    fi
+
+    # Get all panes in the tab
+    local panes
+    panes=$(panes_in_tab "$tab_id")
+
+    # Output panes
+    if [[ -n "$panes" ]]; then
+        echo "$panes"
+    fi
+}
+
+# Handler: select-pane
+handle_select_pane() {
+    local target="${TMUX_PANE:-}"
+    local has_style=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -t)
+                target="$2"
+                shift 2
+                ;;
+            -P|-T)
+                # Style or title operations - no-op
+                has_style=true
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    # No-op for style/title
+    if [[ "$has_style" == true ]]; then
+        exit 0
+    fi
+
+    # Get WezTerm pane ID and activate
+    local wez_pane
+    wez_pane=$(wez_from_tmux "$target")
+    wezterm cli activate-pane --pane-id "$wez_pane" >/dev/null 2>&1
+}
+
+# Handler: kill-pane
+handle_kill_pane() {
+    local target="${TMUX_PANE:-}"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -t)
+                target="$2"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    # Get WezTerm pane ID
+    local wez_pane
+    wez_pane=$(wez_from_tmux "$target")
+
+    # Kill the pane
+    wezterm cli kill-pane --pane-id "$wez_pane" >/dev/null 2>&1
+
+    # Remove from mapping
+    remove_pane "$target"
+}
+
+# Dispatch
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+    -V)
+        handle_version
+        ;;
+    display-message)
+        handle_display_message "$@"
+        ;;
+    split-window)
+        handle_split_window "$@"
+        ;;
+    send-keys)
+        handle_send_keys "$@"
+        ;;
+    list-panes)
+        handle_list_panes "$@"
+        ;;
+    select-pane)
+        handle_select_pane "$@"
+        ;;
+    kill-pane)
+        handle_kill_pane "$@"
+        ;;
+    # No-ops - commands that don't need translation
+    select-layout|resize-pane|set-option|set-window-option|\
+    has-session|new-session|new-window|list-sessions|list-windows|\
+    break-pane|join-pane|move-window|swap-pane)
+        exit 0
+        ;;
+    *)
+        # Unknown command - try passthrough to real tmux
+        if [[ -n "${REAL_TMUX:-}" ]]; then
+            exec "$REAL_TMUX" "$cmd" "$@"
+        fi
+        echo "wezterm-tmux-shim: unhandled command: $cmd" >&2
+        exit 1
+        ;;
+esac

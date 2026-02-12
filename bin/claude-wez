@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Detect WezTerm
+if [[ "${TERM_PROGRAM:-}" != "WezTerm" ]]; then
+  echo "Warning: Not running in WezTerm. Falling back to plain claude." >&2
+  exec claude "$@"
+fi
+
+# Resolve paths
+SHIM_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Find real tmux binary (not our shim)
+REAL_TMUX=""
+while IFS= read -r line; do
+  tmux_path=$(echo "$line" | awk '{print $NF}')
+  if [[ "$tmux_path" != "$SHIM_DIR/bin/tmux" ]]; then
+    REAL_TMUX="$tmux_path"
+    break
+  fi
+done < <(type -a tmux 2>/dev/null || true)
+
+# Source pane-map library
+# shellcheck source=../lib/pane-map.sh
+. "$SHIM_DIR/lib/pane-map.sh"
+
+# Initialize shim state
+shim_init
+
+# Get current WezTerm pane and tab info
+wez_pane_id="${WEZTERM_PANE:-}"
+if [[ -z "$wez_pane_id" ]]; then
+  wez_pane_id=$(wezterm cli list --format json | jq -r '.[] | select(.is_active) | .pane_id' | head -1)
+fi
+
+if [[ -z "$wez_pane_id" ]]; then
+  echo "Error: Could not determine WezTerm pane ID" >&2
+  exit 1
+fi
+
+# Get tab ID for this pane
+tab_id=$(wezterm cli list --format json | jq -r ".[] | select(.pane_id == $wez_pane_id) | .tab_id" | head -1)
+
+if [[ -z "$tab_id" ]]; then
+  echo "Error: Could not determine WezTerm tab ID" >&2
+  exit 1
+fi
+
+# Allocate leader pane ID for Claude
+leader_pane=$(alloc_pane_id "$wez_pane_id" "$tab_id")
+
+# Export fake tmux environment
+export TMUX="/fake/wezterm-tmux-shim,0,0"
+export TMUX_PANE="$leader_pane"
+export WEZTERM_SHIM_LIB="$SHIM_DIR/lib/pane-map.sh"
+export WEZTERM_SHIM_TAB="$tab_id"
+export WEZTERM_SHIM_DIR="$SHIM_DIR"
+export REAL_TMUX="${REAL_TMUX:-}"
+export PATH="$SHIM_DIR/bin:$PATH"
+
+# Launch Claude Code in the fake tmux environment
+exec claude "$@"
