@@ -67,12 +67,9 @@ IFS="$saved_ifs"
 # Create directories
 mkdir -p "$INSTALL_DIR/bin" "$INSTALL_DIR/lib" "$BIN_DIR" "$STATE_DIR"
 
-# Save real tmux path
+# Save real tmux path (optional — passthrough only)
 if [ -n "$REAL_TMUX" ]; then
     echo "$REAL_TMUX" > "$STATE_DIR/real-tmux-path"
-    printf "${GREEN}Real tmux found at: ${REAL_TMUX}${NC}\n"
-else
-    printf "${YELLOW}Warning: Real tmux not found in PATH${NC}\n"
 fi
 
 # --- Extract embedded files ---
