@@ -1,6 +1,26 @@
 #!/bin/sh
 set -eu
 
+# Uninstall
+if [ "${1:-}" = "--uninstall" ]; then
+    BIN_DIR="$HOME/.local/bin"
+    INSTALL_DIR="$HOME/.local/share/wezcld"
+    STATE_DIR="$HOME/.local/state/wezcld"
+    echo "Uninstalling wezcld..."
+    rm -f "$BIN_DIR/wezcld" "$BIN_DIR/tmux"
+    rm -rf "$INSTALL_DIR"
+    rm -rf "$STATE_DIR"
+    for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+        if [ -f "$rc" ]; then
+            tmp="${rc}.wezcld-tmp"
+            grep -v '# wezcld$' "$rc" > "$tmp" || true
+            mv "$tmp" "$rc"
+        fi
+    done
+    echo "wezcld uninstalled."
+    exit 0
+fi
+
 # Detect WezTerm
 if [ "${TERM_PROGRAM:-}" != "WezTerm" ]; then
     echo "Warning: Not running in WezTerm. Falling back to plain claude." >&2
