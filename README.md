@@ -9,6 +9,8 @@
 
 **WezTerm tmux shim for Claude Code agent teams**
 
+![wezcld demo](docs/demo.gif)
+
 ## Why
 
 Claude Code uses tmux to manage agent teams, spawning each agent in a separate pane. wezcld intercepts tmux commands and translates them to WezTerm CLI calls, letting you use native WezTerm splits instead of tmux.
