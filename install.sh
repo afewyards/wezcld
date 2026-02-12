@@ -62,7 +62,7 @@ fi
 
 # Create symlinks (idempotent)
 echo "Creating symlinks..."
-ln -sf "$SHIM_DIR/bin/claude-wez" "$HOME/.local/bin/claude-wez"
+ln -sf "$SHIM_DIR/bin/wezcld" "$HOME/.local/bin/wezcld"
 ln -sf "$SHIM_DIR/bin/tmux" "$HOME/.local/bin/tmux"
 echo -e "${GREEN}Symlinks created${NC}"
 
@@ -94,11 +94,11 @@ echo ""
 echo -e "${GREEN}Installation complete!${NC}"
 echo ""
 echo "Usage:"
-echo "  claude-wez              Launch Claude Code with WezTerm integration"
-echo "  claude-wez --resume     Resume last session"
+echo "  wezcld                  Launch Claude Code with WezTerm integration"
+echo "  wezcld --resume         Resume last session"
 echo ""
 echo "The tmux shim is active when running inside WezTerm."
 echo "Outside WezTerm, all tmux commands pass through to the real tmux."
 echo ""
 echo "To uninstall:"
-echo "  rm ~/.local/bin/claude-wez ~/.local/bin/tmux"
+echo "  rm ~/.local/bin/wezcld ~/.local/bin/tmux"
