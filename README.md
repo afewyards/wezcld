@@ -19,7 +19,7 @@ Claude Code uses tmux to manage agent teams, spawning each agent in a separate p
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/USER/wezterm-tmux-shim/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/afewyards/wezcld/main/install.sh | sh
 ```
 
 ## Usage
@@ -77,7 +77,7 @@ When running outside WezTerm, `wezcld` automatically falls back to plain `claude
 ## Uninstall
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/USER/wezterm-tmux-shim/main/install.sh | sh -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/afewyards/wezcld/main/install.sh | sh -s -- --uninstall
 ```
 
 ## Development
