@@ -60,5 +60,20 @@ export ITERM_SESSION_ID="wezcld-$$"
 export WEZCLD_STATE="$STATE_DIR"
 export PATH="$SHIM_DIR/bin:$PATH"
 
-# Launch Claude Code with iTerm teammate mode
+# Spawn detached watchdog that monitors our PID and cleans up panes after we die
+(
+    PARENT=$$
+    while kill -0 "$PARENT" 2>/dev/null; do
+        sleep 1
+    done
+    grid_file="$STATE_DIR/grid-panes"
+    [ -f "$grid_file" ] || exit 0
+    while IFS= read -r pane_id; do
+        [ -n "$pane_id" ] || continue
+        wezterm cli kill-pane --pane-id "$pane_id" 2>/dev/null || true
+    done < "$grid_file"
+    rm -f "$grid_file"
+) &
+
+# exec into claude so WezTerm sees the real process
 exec claude --teammate-mode tmux "$@"
