@@ -21,14 +21,13 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           allow-initial-development-versions: true
 
-      - name: Update VERSION and rebuild installer
+      - name: Update VERSION file
         if: steps.semrel.outputs.version != ''
         run: |
           echo "${{ steps.semrel.outputs.version }}" > VERSION
-          sh scripts/build-installer.sh
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add VERSION install.sh
+          git add VERSION
           git commit -m "chore(release): ${{ steps.semrel.outputs.version }} [skip ci]"
           git push
 
@@ -37,5 +36,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.semrel.outputs.version }}
-          files: install.sh
+          files: |
+            install.sh
+            bin/it2
+            bin/wezcld
+            VERSION
           generate_release_notes: true
