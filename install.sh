@@ -209,6 +209,9 @@ main() {
                     # Append to grid-panes file
                     echo "$new_pane_id" >> "$GRID_FILE"
 
+                    # Refocus leader pane
+                    wezterm cli activate-pane --pane-id "${WEZTERM_PANE:-0}" 2>/dev/null || true
+
                     output="Created new pane: $new_pane_id"
                     echo "$output"
                     ;;
