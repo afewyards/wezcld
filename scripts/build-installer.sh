@@ -67,6 +67,11 @@ printf 'cat > "$INSTALL_DIR/bin/wezcld" << '"'"'WEZCLD_EOF'"'"'\n' >> "$OUT"
 cat "$REPO_DIR/bin/wezcld" >> "$OUT"
 printf 'WEZCLD_EOF\n\n' >> "$OUT"
 
+# Embed VERSION
+printf 'cat > "$INSTALL_DIR/VERSION" << '"'"'VERSION_EOF'"'"'\n' >> "$OUT"
+cat "$REPO_DIR/VERSION" >> "$OUT"
+printf 'VERSION_EOF\n\n' >> "$OUT"
+
 # Append footer
 cat >> "$OUT" << 'FOOTER'
 # Make scripts executable

@@ -400,12 +400,6 @@ if [ "${1:-}" = "--uninstall" ]; then
     exit 0
 fi
 
-# Detect WezTerm
-if [ "${TERM_PROGRAM:-}" != "WezTerm" ]; then
-    echo "Warning: Not running in WezTerm. Falling back to plain claude." >&2
-    exec claude "$@"
-fi
-
 # Resolve paths (follow symlinks) — POSIX compatible
 SOURCE="$0"
 while [ -L "$SOURCE" ]; do
@@ -417,6 +411,20 @@ while [ -L "$SOURCE" ]; do
     esac
 done
 SHIM_DIR="$(cd "$(dirname "$SOURCE")/.." && pwd)"
+
+# Version
+if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-v" ]; then
+    VER="dev"
+    [ -f "$SHIM_DIR/VERSION" ] && VER="$(cat "$SHIM_DIR/VERSION")"
+    echo "wezcld $VER"
+    exit 0
+fi
+
+# Detect WezTerm
+if [ "${TERM_PROGRAM:-}" != "WezTerm" ]; then
+    echo "Warning: Not running in WezTerm. Falling back to plain claude." >&2
+    exec claude "$@"
+fi
 
 # Initialize state directory
 STATE_DIR="${WEZCLD_STATE:-$HOME/.local/state/wezcld}"
@@ -434,6 +442,10 @@ export PATH="$SHIM_DIR/bin:$PATH"
 # Launch Claude Code with iTerm teammate mode
 exec claude --teammate-mode tmux "$@"
 WEZCLD_EOF
+
+cat > "$INSTALL_DIR/VERSION" << 'VERSION_EOF'
+0.0.0
+VERSION_EOF
 
 # Make scripts executable
 chmod +x "$INSTALL_DIR/bin/wezcld" "$INSTALL_DIR/bin/it2"
