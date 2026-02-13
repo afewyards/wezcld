@@ -148,7 +148,10 @@ main() {
                     elif [ "$row" -eq 0 ]; then
                         # Filling first row: split right from previous pane
                         previous_pane=$(tail -n 1 "$GRID_FILE")
-                        new_pane_id=$(wezterm cli split-pane --right --pane-id "$previous_pane")
+                        # Calculate percent so all columns end up equal width
+                        remaining=$((MAX_COLS - col))
+                        pct=$(( (100 * remaining + (remaining + 1) / 2) / (remaining + 1) ))
+                        new_pane_id=$(wezterm cli split-pane --right --percent "$pct" --pane-id "$previous_pane")
                     else
                         # New row: split bottom from pane above (same column)
                         pane_above_index=$((agent_count - MAX_COLS + 1))
