@@ -108,14 +108,65 @@ main() {
         session)
             case "${2:-}" in
                 split)
-                    session_id=$(get_next_session_id)
-                    output="Created new pane: fake-session-$session_id"
+                    # Parse -v flag and -s <parent> flag
+                    shift 2  # skip "session" and "split"
+                    split_args="--bottom"
+                    parent=""
+                    while [ $# -gt 0 ]; do
+                        case "$1" in
+                            -v|--vertical)
+                                # -v means vertical split, keep --bottom
+                                shift
+                                ;;
+                            -s|--session)
+                                parent="$2"
+                                shift 2
+                                ;;
+                            *)
+                                shift
+                                ;;
+                        esac
+                    done
+
+                    # Add parent pane ID if specified
+                    if [ -n "$parent" ]; then
+                        split_args="$split_args --pane-id $parent"
+                    fi
+
+                    # Call wezterm cli split-pane and get real pane ID
+                    new_pane_id=$(wezterm cli split-pane $split_args)
+                    output="Created new pane: $new_pane_id"
                     echo "$output"
                     ;;
                 send|send-text)
                     output=""
                     ;;
                 run)
+                    # Parse -s <id> flag and command
+                    shift 2  # skip "session" and "run"
+                    target=""
+                    cmd=""
+                    while [ $# -gt 0 ]; do
+                        case "$1" in
+                            -s|--session)
+                                target="$2"
+                                shift 2
+                                ;;
+                            *)
+                                if [ -z "$cmd" ]; then
+                                    cmd="$1"
+                                else
+                                    cmd="$cmd $1"
+                                fi
+                                shift
+                                ;;
+                        esac
+                    done
+
+                    # Send command to target pane
+                    if [ -n "$target" ] && [ -n "$cmd" ]; then
+                        printf '%s\n' "$cmd" | wezterm cli send-text --no-paste --pane-id "$target"
+                    fi
                     output=""
                     ;;
                 close)
