@@ -25,10 +25,9 @@ NC='\033[0m'
 # --- Uninstall ---
 if [ "${1:-}" = "--uninstall" ]; then
     echo "Uninstalling wezcld..."
-    rm -f "$BIN_DIR/wezcld" "$BIN_DIR/tmux"
+    rm -f "$BIN_DIR/wezcld" "$BIN_DIR/it2"
     rm -rf "$INSTALL_DIR"
     rm -rf "$STATE_DIR"
-    # Remove PATH line from shell rc files
     for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
         if [ -f "$rc" ]; then
             tmp="${rc}.wezcld-tmp"
@@ -45,53 +44,23 @@ echo "Installing wezcld..."
 
 # Check dependencies
 missing=""
-if ! command -v jq >/dev/null 2>&1; then
-    missing="$missing jq"
-fi
 if ! command -v wezterm >/dev/null 2>&1; then
     missing="$missing wezterm"
 fi
 if [ -n "$missing" ]; then
     printf "${YELLOW}Warning: Missing dependencies:${missing}${NC}\n"
-    printf "${YELLOW}Install with: brew install${missing}${NC}\n"
 fi
-
-# Find real tmux in PATH (skip BIN_DIR)
-REAL_TMUX=""
-saved_ifs="$IFS"
-IFS=:
-for path_entry in $PATH; do
-    IFS="$saved_ifs"
-    if [ "$path_entry" = "$BIN_DIR" ]; then
-        continue
-    fi
-    if [ -x "$path_entry/tmux" ]; then
-        REAL_TMUX="$path_entry/tmux"
-        break
-    fi
-done
-IFS="$saved_ifs"
 
 # Create directories
-mkdir -p "$INSTALL_DIR/bin" "$INSTALL_DIR/lib" "$BIN_DIR" "$STATE_DIR"
-
-# Save real tmux path (optional — passthrough only)
-if [ -n "$REAL_TMUX" ]; then
-    echo "$REAL_TMUX" > "$STATE_DIR/real-tmux-path"
-fi
+mkdir -p "$INSTALL_DIR/bin" "$BIN_DIR" "$STATE_DIR"
 
 # --- Extract embedded files ---
 HEADER
 
-# Embed pane-map.sh
-printf 'cat > "$INSTALL_DIR/lib/pane-map.sh" << '"'"'PANE_MAP_EOF'"'"'\n' >> "$OUT"
-cat "$REPO_DIR/lib/pane-map.sh" >> "$OUT"
-printf 'PANE_MAP_EOF\n\n' >> "$OUT"
-
-# Embed bin/tmux
-printf 'cat > "$INSTALL_DIR/bin/tmux" << '"'"'TMUX_SHIM_EOF'"'"'\n' >> "$OUT"
-cat "$REPO_DIR/bin/tmux" >> "$OUT"
-printf 'TMUX_SHIM_EOF\n\n' >> "$OUT"
+# Embed bin/it2
+printf 'cat > "$INSTALL_DIR/bin/it2" << '"'"'IT2_SHIM_EOF'"'"'\n' >> "$OUT"
+cat "$REPO_DIR/bin/it2" >> "$OUT"
+printf 'IT2_SHIM_EOF\n\n' >> "$OUT"
 
 # Embed bin/wezcld
 printf 'cat > "$INSTALL_DIR/bin/wezcld" << '"'"'WEZCLD_EOF'"'"'\n' >> "$OUT"
@@ -101,10 +70,10 @@ printf 'WEZCLD_EOF\n\n' >> "$OUT"
 # Append footer
 cat >> "$OUT" << 'FOOTER'
 # Make scripts executable
-chmod +x "$INSTALL_DIR/bin/wezcld" "$INSTALL_DIR/bin/tmux" "$INSTALL_DIR/lib/pane-map.sh"
+chmod +x "$INSTALL_DIR/bin/wezcld" "$INSTALL_DIR/bin/it2"
 
 # Remove old symlinks/files before creating wrappers
-rm -f "$BIN_DIR/wezcld" "$BIN_DIR/tmux"
+rm -f "$BIN_DIR/wezcld" "$BIN_DIR/it2" "$BIN_DIR/tmux"
 
 # Create thin wrappers in BIN_DIR
 cat > "$BIN_DIR/wezcld" << 'WRAPPER_WEZCLD'
@@ -113,11 +82,11 @@ exec "$HOME/.local/share/wezcld/bin/wezcld" "$@"
 WRAPPER_WEZCLD
 chmod +x "$BIN_DIR/wezcld"
 
-cat > "$BIN_DIR/tmux" << 'WRAPPER_TMUX'
+cat > "$BIN_DIR/it2" << 'WRAPPER_IT2'
 #!/bin/sh
-exec "$HOME/.local/share/wezcld/bin/tmux" "$@"
-WRAPPER_TMUX
-chmod +x "$BIN_DIR/tmux"
+exec "$HOME/.local/share/wezcld/bin/it2" "$@"
+WRAPPER_IT2
+chmod +x "$BIN_DIR/it2"
 
 # Auto-configure shell rc
 path_line='export PATH="$HOME/.local/bin:$PATH" # wezcld'
@@ -136,7 +105,6 @@ case "${SHELL:-/bin/sh}" in
     */zsh)  add_to_rc "$HOME/.zshrc" ;;
     */bash) add_to_rc "$HOME/.bashrc" ;;
     *)
-        # Try both if shell is unknown
         [ -f "$HOME/.zshrc" ] && add_to_rc "$HOME/.zshrc"
         [ -f "$HOME/.bashrc" ] && add_to_rc "$HOME/.bashrc"
         ;;
@@ -149,8 +117,8 @@ echo "Usage:"
 echo "  wezcld                  Launch Claude Code with WezTerm integration"
 echo "  wezcld --resume         Resume last session"
 echo ""
-echo "The tmux shim is active when running inside WezTerm."
-echo "Outside WezTerm, all tmux commands pass through to the real tmux."
+echo "The it2 shim captures commands when running inside WezTerm."
+echo "Outside WezTerm, wezcld falls back to plain claude."
 echo ""
 echo "To uninstall:"
 echo "  curl -fsSL <url> | sh -s -- --uninstall"
