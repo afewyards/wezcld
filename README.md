@@ -7,6 +7,8 @@
   ╚══╝╚══╝ ╚══════╝ ╚══════╝  ╚═════╝ ╚══════╝╚═════╝
 ```
 
+[![Release](https://img.shields.io/github/v/release/afewyards/wezcld)](https://github.com/afewyards/wezcld/releases/latest)
+
 **WezTerm it2 shim for Claude Code agent teams**
 
 ![wezcld demo](docs/demo.gif)
