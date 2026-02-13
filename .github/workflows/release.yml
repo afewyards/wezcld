@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: go-semantic-release/action@v1
+        id: semrel
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          allow-initial-development-versions: true
+
+      - name: Update VERSION and rebuild installer
+        if: steps.semrel.outputs.version != ''
+        run: |
+          echo "${{ steps.semrel.outputs.version }}" > VERSION
+          sh scripts/build-installer.sh
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add VERSION install.sh
+          git commit -m "chore(release): ${{ steps.semrel.outputs.version }} [skip ci]"
+          git push
+
+      - name: Create GitHub Release
+        if: steps.semrel.outputs.version != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.semrel.outputs.version }}
+          files: install.sh
+          generate_release_notes: true
