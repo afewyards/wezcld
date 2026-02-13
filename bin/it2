@@ -1,0 +1,163 @@
+#!/bin/sh
+# it2 - iTerm2 CLI shim for wezcld
+# Logs all invocations and returns fake responses for observation mode
+
+set -eu
+
+# Determine state directory
+STATE_DIR="${WEZCLD_STATE:-$HOME/.local/state/wezcld}"
+mkdir -p "$STATE_DIR"
+
+LOG_FILE="$STATE_DIR/it2-calls.log"
+COUNTER_DIR="$STATE_DIR/it2-counter"
+
+# Atomic counter for fake session IDs
+get_next_session_id() {
+    # Use mkdir as atomic lock
+    lock_acquired=0
+    counter=0
+
+    # Detect and remove stale lock
+    if [ -d "$COUNTER_DIR.lock" ]; then
+        lock_pid=$(cat "$COUNTER_DIR.lock/pid" 2>/dev/null || echo "")
+        if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
+            rmdir "$COUNTER_DIR.lock" 2>/dev/null || true
+        fi
+    fi
+
+    for _ in 1 2 3; do
+        if mkdir "$COUNTER_DIR.lock" 2>/dev/null; then
+            lock_acquired=1
+            echo "$$" > "$COUNTER_DIR.lock/pid"
+            break
+        fi
+        sleep 1
+    done
+
+    if [ "$lock_acquired" = 0 ]; then
+        # Fallback if lock fails after 3 retries
+        echo "0"
+        return
+    fi
+
+    # Read current counter
+    if [ -f "$COUNTER_DIR" ]; then
+        counter=$(cat "$COUNTER_DIR")
+    else
+        counter=0
+    fi
+
+    # Increment and write back
+    counter=$((counter + 1))
+    echo "$counter" > "$COUNTER_DIR"
+
+    # Release lock
+    rm -f "$COUNTER_DIR.lock/pid"
+    rmdir "$COUNTER_DIR.lock"
+
+    echo "$counter"
+}
+
+# Log invocation with ISO timestamp
+log_call() {
+    timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    exit_code="$1"
+    shift
+    output="$*"
+
+    printf '[%s] ARGV: %s | EXIT: %d | STDOUT: %s\n' \
+        "$timestamp" "$ARGV_STR" "$exit_code" "$output" >> "$LOG_FILE"
+}
+
+# Store original arguments for logging
+ARGV_STR="it2"
+for arg in "$@"; do
+    # Sanitize: replace newlines with spaces, wrap args with special chars in single quotes
+    sanitized=$(printf '%s' "$arg" | tr '\n' ' ')
+    case "$sanitized" in
+        *[\ \"\|]*) ARGV_STR="$ARGV_STR '${sanitized}'" ;;
+        *) ARGV_STR="$ARGV_STR $sanitized" ;;
+    esac
+done
+
+# Dispatch based on arguments
+main() {
+    exit_code=0  # Always 0 for Phase 1 — all commands fake success
+    output=""
+
+    case "${1:-}" in
+        --version)
+            output="it2 0.2.3"
+            echo "$output"
+            ;;
+        --help|"")
+            output="it2 - iTerm2 CLI (wezcld shim)"
+            echo "$output"
+            ;;
+        app)
+            case "${2:-}" in
+                version)
+                    output="it2 0.2.3"
+                    echo "$output"
+                    ;;
+                *)
+                    output=""
+                    ;;
+            esac
+            ;;
+        session)
+            case "${2:-}" in
+                split)
+                    session_id=$(get_next_session_id)
+                    output="Created new pane: fake-session-$session_id"
+                    echo "$output"
+                    ;;
+                send|send-text)
+                    output=""
+                    ;;
+                run)
+                    output=""
+                    ;;
+                close)
+                    output="Session closed"
+                    echo "$output"
+                    ;;
+                list)
+                    output="Session ID       Name    Title           Size    TTY"
+                    echo "$output"
+                    ;;
+                focus|clear|restart)
+                    output=""
+                    ;;
+                *)
+                    output=""
+                    ;;
+            esac
+            ;;
+        split)
+            session_id=$(get_next_session_id)
+            output="Created new pane: fake-session-$session_id"
+            echo "$output"
+            ;;
+        send|run)
+            output=""
+            ;;
+        vsplit)
+            session_id=$(get_next_session_id)
+            output="Created new pane: fake-session-$session_id"
+            echo "$output"
+            ;;
+        ls)
+            output="Session ID       Name    Title           Size    TTY"
+            echo "$output"
+            ;;
+        *)
+            output=""
+            ;;
+    esac
+
+    log_call "$exit_code" "$output"
+    return "$exit_code"
+}
+
+main "$@"
