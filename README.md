@@ -36,25 +36,19 @@ When running outside WezTerm, `wezcld` automatically falls back to plain `claude
 **Architecture:**
 
 - **`wezcld` launcher**: Sets `TERM_PROGRAM=iTerm.app` and puts the shim's `bin/` directory first in `PATH`, then launches Claude with `--teammate-mode tmux`
-- **`bin/it2` shim**: Intercepts `it2` CLI commands and logs them to `~/.local/state/wezcld/it2-calls.log`, returning plausible fake responses
-- **No mapping layer**: Unlike the old tmux polyfill, the it2 approach needs no pane ID mapping
+- **`bin/it2` shim**: Intercepts `it2` CLI commands and translates them to real `wezterm cli` calls
+- **Grid layout**: Agent panes are arranged in a 3-column grid, with the leader pane kept at the bottom
 
-> **Note:** This is Phase 1 (observation mode). The shim logs all commands to determine exactly what Claude Code sends. Phase 2 will translate these to real `wezterm cli` calls.
+## Supported commands
 
-## Logged commands
-
-| Command | Fake response |
-|---------|---------------|
-| `--version` / `app version` | `it2 0.2.3` |
-| `session split [-v]` | `Created new pane: fake-session-{N}` |
-| `session send` | Silent success |
-| `session run` | Silent success |
-| `session close` | `Session closed` |
-| `session list` | Minimal fake session table |
-| `split` / `vsplit` | Alias for `session split` |
+| Command | WezTerm action |
+|---------|----------------|
+| `--version` / `app version` | Returns `it2 0.2.3` |
+| `session split [-v]` | `wezterm cli split-pane` (grid layout) |
+| `session run -s <id> <cmd>` | `wezterm cli send-text --pane-id <id>` |
+| `session close -s <id>` | `wezterm cli kill-pane --pane-id <id>` |
+| `session list` | Minimal session table |
 | All other commands | Silent success (exit 0) |
-
-Logs are written to `~/.local/state/wezcld/it2-calls.log`.
 
 ## Requirements
 
