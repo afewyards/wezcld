@@ -7,7 +7,7 @@ if [ "${1:-}" = "--uninstall" ]; then
     INSTALL_DIR="$HOME/.local/share/wezcld"
     STATE_DIR="$HOME/.local/state/wezcld"
     echo "Uninstalling wezcld..."
-    rm -f "$BIN_DIR/wezcld" "$BIN_DIR/tmux"
+    rm -f "$BIN_DIR/wezcld" "$BIN_DIR/it2"
     rm -rf "$INSTALL_DIR"
     rm -rf "$STATE_DIR"
     for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
@@ -39,58 +39,18 @@ while [ -L "$SOURCE" ]; do
 done
 SHIM_DIR="$(cd "$(dirname "$SOURCE")/.." && pwd)"
 
-# Find real tmux binary (not our shim)
-REAL_TMUX=""
-saved_ifs="$IFS"
-IFS=:
-for path_entry in $PATH; do
-    IFS="$saved_ifs"
-    if [ "$path_entry" = "$SHIM_DIR/bin" ]; then
-        continue
-    fi
-    if [ -x "$path_entry/tmux" ]; then
-        REAL_TMUX="$path_entry/tmux"
-        break
-    fi
-done
-IFS="$saved_ifs"
+# Initialize state directory
+STATE_DIR="${WEZCLD_STATE:-$HOME/.local/state/wezcld}"
+mkdir -p "$STATE_DIR"
 
-# Source pane-map library
-. "$SHIM_DIR/lib/pane-map.sh"
+# Override TERM_PROGRAM to trigger Claude Code's iTerm detection
+export TERM_PROGRAM="iTerm.app"
+export LC_TERMINAL="iTerm2"
+export ITERM_SESSION_ID="wezcld-$$"
 
-# Initialize shim state
-shim_init
-
-# Get current WezTerm pane and tab info
-wez_pane_id="${WEZTERM_PANE:-}"
-if [ -z "$wez_pane_id" ]; then
-    wez_pane_id=$(wezterm cli list --format json | jq -r '.[] | select(.is_active) | .pane_id' | head -1)
-fi
-
-if [ -z "$wez_pane_id" ]; then
-    echo "Error: Could not determine WezTerm pane ID" >&2
-    exit 1
-fi
-
-# Get tab ID for this pane
-tab_id=$(wezterm cli list --format json | jq -r ".[] | select(.pane_id == $wez_pane_id) | .tab_id" | head -1)
-
-if [ -z "$tab_id" ]; then
-    echo "Error: Could not determine WezTerm tab ID" >&2
-    exit 1
-fi
-
-# Allocate leader pane ID for Claude
-leader_pane=$(alloc_pane_id "$wez_pane_id" "$tab_id")
-
-# Export fake tmux environment
-export TMUX="/fake/wezcld,0,0"
-export TMUX_PANE="$leader_pane"
-export WEZTERM_SHIM_LIB="$SHIM_DIR/lib/pane-map.sh"
-export WEZTERM_SHIM_TAB="$tab_id"
-export WEZTERM_SHIM_DIR="$SHIM_DIR"
-export REAL_TMUX="${REAL_TMUX:-}"
+# Put our it2 shim first in PATH
+export WEZCLD_STATE="$STATE_DIR"
 export PATH="$SHIM_DIR/bin:$PATH"
 
-# Launch Claude Code in the fake tmux environment
-exec claude "$@"
+# Launch Claude Code with iTerm teammate mode
+exec claude --teammate-mode tmux "$@"
