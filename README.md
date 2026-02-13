@@ -20,7 +20,7 @@ Claude Code uses iTerm2 split panes to manage agent teams. wezcld intercepts `it
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/afewyards/wezcld/main/install.sh | sh
+curl -fsSL https://github.com/afewyards/wezcld/releases/latest/download/install.sh | sh
 ```
 
 ## Usage
@@ -61,7 +61,7 @@ When running outside WezTerm, `wezcld` automatically falls back to plain `claude
 ## Uninstall
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/afewyards/wezcld/main/install.sh | sh -s -- --uninstall
+curl -fsSL https://github.com/afewyards/wezcld/releases/latest/download/install.sh | sh -s -- --uninstall
 ```
 
 ## Development
@@ -72,8 +72,3 @@ curl -fsSL https://raw.githubusercontent.com/afewyards/wezcld/main/install.sh | 
 ./tests/integration-test.sh
 ```
 
-**Rebuilding installer:**
-
-```sh
-./scripts/build-installer.sh
-```
