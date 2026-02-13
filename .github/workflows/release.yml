@@ -31,14 +31,21 @@ jobs:
           git commit -m "chore(release): ${{ steps.semrel.outputs.version }} [skip ci]"
           git push
 
+      - name: Prepare release assets
+        if: steps.semrel.outputs.version != ''
+        run: |
+          mkdir -p dist
+          sed 's/wezcld dev/wezcld ${{ steps.semrel.outputs.version }}/' bin/wezcld > dist/wezcld
+          cp bin/it2 dist/it2
+          cp install.sh dist/install.sh
+
       - name: Create GitHub Release
         if: steps.semrel.outputs.version != ''
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.semrel.outputs.version }}
           files: |
-            install.sh
-            bin/it2
-            bin/wezcld
-            VERSION
+            dist/install.sh
+            dist/wezcld
+            dist/it2
           generate_release_notes: true

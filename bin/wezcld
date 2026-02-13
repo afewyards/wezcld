@@ -35,9 +35,7 @@ SHIM_DIR="$(cd "$(dirname "$SOURCE")/.." && pwd)"
 
 # Version
 if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-v" ]; then
-    VER="dev"
-    [ -f "$SHIM_DIR/VERSION" ] && VER="$(cat "$SHIM_DIR/VERSION")"
-    echo "wezcld $VER"
+    echo "wezcld dev"
     exit 0
 fi
 

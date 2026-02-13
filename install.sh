@@ -64,7 +64,6 @@ download() {
 
 download "it2" "$INSTALL_DIR/bin/it2"
 download "wezcld" "$INSTALL_DIR/bin/wezcld"
-download "VERSION" "$INSTALL_DIR/VERSION"
 
 # Make scripts executable
 chmod +x "$INSTALL_DIR/bin/wezcld" "$INSTALL_DIR/bin/it2"

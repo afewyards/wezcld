@@ -126,32 +126,20 @@ else
     fail "log entries have [timestamp] ARGV: format" "format mismatch"
 fi
 
-# Test 14: wezcld --version with VERSION file
-echo "1.2.3" > "$SHIM_DIR/VERSION"
-version_output=$("$SHIM_DIR/bin/wezcld" --version 2>&1)
-rm -f "$SHIM_DIR/VERSION"
-if [ "$version_output" = "wezcld 1.2.3" ]; then
-    pass "wezcld --version with VERSION file outputs 'wezcld 1.2.3'"
-else
-    fail "wezcld --version with VERSION file outputs 'wezcld 1.2.3'" "got '$version_output'"
-fi
-
-# Test 18: wezcld -v with VERSION file
-echo "1.2.3" > "$SHIM_DIR/VERSION"
-version_output=$("$SHIM_DIR/bin/wezcld" -v 2>&1)
-rm -f "$SHIM_DIR/VERSION"
-if [ "$version_output" = "wezcld 1.2.3" ]; then
-    pass "wezcld -v with VERSION file outputs 'wezcld 1.2.3'"
-else
-    fail "wezcld -v with VERSION file outputs 'wezcld 1.2.3'" "got '$version_output'"
-fi
-
-# Test 19: wezcld --version without VERSION file outputs 'wezcld dev'
+# Test 14: wezcld --version outputs 'wezcld dev'
 version_output=$("$SHIM_DIR/bin/wezcld" --version 2>&1)
 if [ "$version_output" = "wezcld dev" ]; then
-    pass "wezcld --version without VERSION file outputs 'wezcld dev'"
+    pass "wezcld --version outputs 'wezcld dev'"
 else
-    fail "wezcld --version without VERSION file outputs 'wezcld dev'" "got '$version_output'"
+    fail "wezcld --version outputs 'wezcld dev'" "got '$version_output'"
+fi
+
+# Test 18: wezcld -v outputs 'wezcld dev'
+version_output=$("$SHIM_DIR/bin/wezcld" -v 2>&1)
+if [ "$version_output" = "wezcld dev" ]; then
+    pass "wezcld -v outputs 'wezcld dev'"
+else
+    fail "wezcld -v outputs 'wezcld dev'" "got '$version_output'"
 fi
 
 echo
