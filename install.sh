@@ -119,6 +119,53 @@ log_call() {
         "$timestamp" "$ARGV_STR" "$exit_code" "$output" >> "$LOG_FILE"
 }
 
+# Grid-panes file locking (mkdir-based atomic lock)
+grid_lock() {
+    lock_dir="$STATE_DIR/grid-panes.lock"
+    # Detect and remove stale lock
+    if [ -d "$lock_dir" ]; then
+        lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
+        if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
+            rm -f "$lock_dir/pid"
+            rmdir "$lock_dir" 2>/dev/null || true
+        fi
+    fi
+    for _ in 1 2 3 4 5; do
+        if mkdir "$lock_dir" 2>/dev/null; then
+            echo "$$" > "$lock_dir/pid"
+            return 0
+        fi
+        sleep 0.2
+    done
+    return 1
+}
+
+grid_unlock() {
+    rm -f "$STATE_DIR/grid-panes.lock/pid"
+    rmdir "$STATE_DIR/grid-panes.lock" 2>/dev/null || true
+}
+
+# Remove pane IDs from grid-panes that no longer exist in WezTerm
+prune_stale_panes() {
+    grid_file="$STATE_DIR/grid-panes"
+    [ -f "$grid_file" ] || return 0
+    [ -s "$grid_file" ] || return 0
+
+    # Get live pane IDs; skip pruning if wezterm cli fails
+    live_output=$(wezterm cli list 2>/dev/null) || return 0
+    live_panes=$(printf '%s\n' "$live_output" | awk 'NR>1 {print $3}')
+
+    tmp="$grid_file.prune.$$"
+    : > "$tmp"
+    while IFS= read -r pane_id; do
+        [ -n "$pane_id" ] || continue
+        if printf '%s\n' "$live_panes" | grep -qx "$pane_id"; then
+            printf '%s\n' "$pane_id" >> "$tmp"
+        fi
+    done < "$grid_file"
+    mv "$tmp" "$grid_file"
+}
+
 # Store original arguments for logging
 ARGV_STR="it2"
 for arg in "$@"; do
@@ -177,7 +224,12 @@ main() {
                         esac
                     done
 
-                    # Grid layout algorithm
+                    # Grid layout algorithm (under lock)
+                    grid_lock || { echo "Failed to acquire grid lock" >&2; exit 1; }
+
+                    # Prune stale panes before calculating positions
+                    prune_stale_panes
+
                     MAX_COLS=3
                     GRID_FILE="$STATE_DIR/grid-panes"
 
@@ -192,22 +244,34 @@ main() {
                     col=$((agent_count % MAX_COLS))
 
                     # Determine split direction and target pane
+                    new_pane_id=""
                     if [ "$row" -eq 0 ] && [ "$col" -eq 0 ]; then
                         # First agent: split from leader (top)
-                        new_pane_id=$(wezterm cli split-pane --top --percent 60)
+                        new_pane_id=$(wezterm cli split-pane --top --percent 60) || true
                     elif [ "$row" -eq 0 ]; then
                         # Filling first row: split right from previous pane
                         previous_pane=$(tail -n 1 "$GRID_FILE")
-                        new_pane_id=$(wezterm cli split-pane --right --pane-id "$previous_pane")
+                        # Calculate percent so all columns end up equal width
+                        remaining=$((MAX_COLS - col))
+                        pct=$(( (100 * remaining + (remaining + 1) / 2) / (remaining + 1) ))
+                        new_pane_id=$(wezterm cli split-pane --right --percent "$pct" --pane-id "$previous_pane") || true
                     else
                         # New row: split bottom from pane above (same column)
                         pane_above_index=$((agent_count - MAX_COLS + 1))
                         pane_above=$(sed -n "${pane_above_index}p" "$GRID_FILE")
-                        new_pane_id=$(wezterm cli split-pane --bottom --pane-id "$pane_above")
+                        new_pane_id=$(wezterm cli split-pane --bottom --pane-id "$pane_above") || true
+                    fi
+
+                    if [ -z "$new_pane_id" ]; then
+                        grid_unlock
+                        echo "Failed to create split pane" >&2
+                        exit 1
                     fi
 
                     # Append to grid-panes file
                     echo "$new_pane_id" >> "$GRID_FILE"
+
+                    grid_unlock
 
                     # Refocus leader pane
                     wezterm cli activate-pane --pane-id "${WEZTERM_PANE:-0}" 2>/dev/null || true
@@ -258,11 +322,14 @@ main() {
                     done
                     if [ -n "$target" ]; then
                         wezterm cli kill-pane --pane-id "$target" 2>/dev/null || true
-                        # Remove from grid-panes
-                        if [ -f "$STATE_DIR/grid-panes" ]; then
-                            tmp="$STATE_DIR/grid-panes.tmp"
-                            grep -v "^${target}$" "$STATE_DIR/grid-panes" > "$tmp" 2>/dev/null || true
-                            mv "$tmp" "$STATE_DIR/grid-panes"
+                        # Remove from grid-panes (under lock)
+                        if grid_lock; then
+                            if [ -f "$STATE_DIR/grid-panes" ]; then
+                                tmp="$STATE_DIR/grid-panes.tmp"
+                                grep -v "^${target}$" "$STATE_DIR/grid-panes" > "$tmp" 2>/dev/null || true
+                                mv "$tmp" "$STATE_DIR/grid-panes"
+                            fi
+                            grid_unlock
                         fi
                     fi
                     output="Session closed"
