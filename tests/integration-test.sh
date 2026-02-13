@@ -129,61 +129,94 @@ fi
 echo
 
 # ============================================================================
-# Group 2: Live WezTerm split tests (conditional)
+# Group 2: Live WezTerm grid layout tests (conditional)
 # ============================================================================
 if [ "${TERM_PROGRAM:-}" = "WezTerm" ]; then
-    echo "Group 2: Live WezTerm split tests"
-    echo "----------------------------------"
+    echo "Group 2: Live WezTerm grid layout tests"
+    echo "----------------------------------------"
 
-    # Test 14: it2 session split outputs "Created new pane: <integer>"
-    split_output1=$("$SHIM_DIR/bin/it2" session split 2>&1)
-    pane_id1=$(echo "$split_output1" | sed 's/Created new pane: //')
-    if echo "$split_output1" | grep -qE "^Created new pane: [0-9]+$"; then
-        pass "it2 session split outputs 'Created new pane: <integer>'"
+    # Clean state for tests
+    rm -f "$WEZCLD_STATE/grid-panes"
+
+    # Test 14: First split creates pane above (--top)
+    split1=$("$SHIM_DIR/bin/it2" session split -v 2>&1)
+    pane1=$(echo "$split1" | sed 's/Created new pane: //')
+    if echo "$pane1" | grep -qE "^[0-9]+$"; then
+        pass "first split returns valid pane ID ($pane1)"
     else
-        fail "it2 session split outputs 'Created new pane: <integer>'" "got '$split_output1'"
+        fail "first split returns valid pane ID" "got '$split1'"
     fi
 
-    # Test 15: Pane ID is a valid integer
-    if echo "$pane_id1" | grep -qE "^[0-9]+$"; then
-        pass "pane ID is a valid integer"
+    # Test 15: Grid-panes file has 1 entry
+    grid_count=$(wc -l < "$WEZCLD_STATE/grid-panes" 2>/dev/null || echo "0")
+    grid_count=$(echo "$grid_count" | tr -d ' ')
+    if [ "$grid_count" -eq 1 ]; then
+        pass "grid-panes has 1 entry after first split"
     else
-        fail "pane ID is a valid integer" "got '$pane_id1'"
+        fail "grid-panes has 1 entry after first split" "got $grid_count"
     fi
 
-    # Test 16: it2 session split -v outputs valid pane ID
-    split_output2=$("$SHIM_DIR/bin/it2" session split -v 2>&1)
-    pane_id2=$(echo "$split_output2" | sed 's/Created new pane: //')
-    if echo "$split_output2" | grep -qE "^Created new pane: [0-9]+$"; then
-        pass "it2 session split -v outputs valid pane ID"
+    # Test 16: Second split creates pane to the right
+    split2=$("$SHIM_DIR/bin/it2" session split -s "$pane1" 2>&1)
+    pane2=$(echo "$split2" | sed 's/Created new pane: //')
+    if echo "$pane2" | grep -qE "^[0-9]+$"; then
+        pass "second split returns valid pane ID ($pane2)"
     else
-        fail "it2 session split -v outputs valid pane ID" "got '$split_output2'"
+        fail "second split returns valid pane ID" "got '$split2'"
     fi
 
-    # Test 17: it2 session split -s <id> outputs valid pane ID
-    split_output3=$("$SHIM_DIR/bin/it2" session split -s "$pane_id1" 2>&1)
-    pane_id3=$(echo "$split_output3" | sed 's/Created new pane: //')
-    if echo "$split_output3" | grep -qE "^Created new pane: [0-9]+$"; then
-        pass "it2 session split -s <id> outputs valid pane ID"
+    # Test 17: Third split creates pane to the right (fills row 1)
+    split3=$("$SHIM_DIR/bin/it2" session split -s "$pane2" 2>&1)
+    pane3=$(echo "$split3" | sed 's/Created new pane: //')
+    if echo "$pane3" | grep -qE "^[0-9]+$"; then
+        pass "third split returns valid pane ID ($pane3)"
     else
-        fail "it2 session split -s <id> outputs valid pane ID" "got '$split_output3'"
+        fail "third split returns valid pane ID" "got '$split3'"
     fi
 
-    # Test 18: it2 session run sends command to target pane
-    if "$SHIM_DIR/bin/it2" session run -s "$pane_id1" "echo test" 2>&1 >/dev/null; then
-        pass "it2 session run sends command to target pane"
+    # Test 18: Fourth split creates new row (--bottom from pane1)
+    split4=$("$SHIM_DIR/bin/it2" session split -s "$pane3" 2>&1)
+    pane4=$(echo "$split4" | sed 's/Created new pane: //')
+    if echo "$pane4" | grep -qE "^[0-9]+$"; then
+        pass "fourth split (new row) returns valid pane ID ($pane4)"
     else
-        fail "it2 session run sends command to target pane" "non-zero exit"
+        fail "fourth split (new row) returns valid pane ID" "got '$split4'"
     fi
 
-    # Clean up created panes
-    wezterm cli kill-pane --pane-id "$pane_id1" 2>/dev/null || true
-    wezterm cli kill-pane --pane-id "$pane_id2" 2>/dev/null || true
-    wezterm cli kill-pane --pane-id "$pane_id3" 2>/dev/null || true
+    # Test 19: Grid-panes file has 4 entries
+    grid_count=$(wc -l < "$WEZCLD_STATE/grid-panes" 2>/dev/null || echo "0")
+    grid_count=$(echo "$grid_count" | tr -d ' ')
+    if [ "$grid_count" -eq 4 ]; then
+        pass "grid-panes has 4 entries after 4 splits"
+    else
+        fail "grid-panes has 4 entries after 4 splits" "got $grid_count"
+    fi
+
+    # Test 20: Session close kills pane and removes from grid
+    "$SHIM_DIR/bin/it2" session close -s "$pane4" >/dev/null 2>&1
+    grid_count=$(wc -l < "$WEZCLD_STATE/grid-panes" 2>/dev/null || echo "0")
+    grid_count=$(echo "$grid_count" | tr -d ' ')
+    if [ "$grid_count" -eq 3 ]; then
+        pass "session close removes pane from grid ($grid_count entries)"
+    else
+        fail "session close removes pane from grid" "got $grid_count entries"
+    fi
+
+    # Test 21: Session run sends command to pane
+    if "$SHIM_DIR/bin/it2" session run -s "$pane1" "echo test" 2>&1 >/dev/null; then
+        pass "session run sends command to target pane"
+    else
+        fail "session run sends command to target pane" "non-zero exit"
+    fi
+
+    # Clean up all created panes
+    wezterm cli kill-pane --pane-id "$pane1" 2>/dev/null || true
+    wezterm cli kill-pane --pane-id "$pane2" 2>/dev/null || true
+    wezterm cli kill-pane --pane-id "$pane3" 2>/dev/null || true
 
     echo
 else
-    echo "Group 2: Live WezTerm split tests (SKIPPED - not in WezTerm)"
+    echo "Group 2: Live WezTerm grid layout tests (SKIPPED - not in WezTerm)"
     echo
 fi
 

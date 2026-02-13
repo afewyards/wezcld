@@ -158,14 +158,13 @@ main() {
         session)
             case "${2:-}" in
                 split)
-                    # Parse -v flag and -s <parent> flag
+                    # Parse -v flag and -s <parent> flag (parse for logging, but ignore -s for grid)
                     shift 2  # skip "session" and "split"
-                    split_args="--bottom"
                     parent=""
                     while [ $# -gt 0 ]; do
                         case "$1" in
                             -v|--vertical)
-                                # -v means vertical split, keep --bottom
+                                # -v means vertical split
                                 shift
                                 ;;
                             -s|--session)
@@ -178,13 +177,38 @@ main() {
                         esac
                     done
 
-                    # Add parent pane ID if specified
-                    if [ -n "$parent" ]; then
-                        split_args="$split_args --pane-id $parent"
+                    # Grid layout algorithm
+                    MAX_COLS=3
+                    GRID_FILE="$STATE_DIR/grid-panes"
+
+                    # Count existing panes
+                    agent_count=0
+                    if [ -f "$GRID_FILE" ]; then
+                        agent_count=$(wc -l < "$GRID_FILE" 2>/dev/null | tr -d ' ')
                     fi
 
-                    # Call wezterm cli split-pane and get real pane ID
-                    new_pane_id=$(wezterm cli split-pane $split_args)
+                    # Calculate grid position
+                    row=$((agent_count / MAX_COLS))
+                    col=$((agent_count % MAX_COLS))
+
+                    # Determine split direction and target pane
+                    if [ "$row" -eq 0 ] && [ "$col" -eq 0 ]; then
+                        # First agent: split from leader (top)
+                        new_pane_id=$(wezterm cli split-pane --top --percent 80)
+                    elif [ "$row" -eq 0 ]; then
+                        # Filling first row: split right from previous pane
+                        previous_pane=$(tail -n 1 "$GRID_FILE")
+                        new_pane_id=$(wezterm cli split-pane --right --pane-id "$previous_pane")
+                    else
+                        # New row: split bottom from pane above (same column)
+                        pane_above_index=$((agent_count - MAX_COLS + 1))
+                        pane_above=$(sed -n "${pane_above_index}p" "$GRID_FILE")
+                        new_pane_id=$(wezterm cli split-pane --bottom --pane-id "$pane_above")
+                    fi
+
+                    # Append to grid-panes file
+                    echo "$new_pane_id" >> "$GRID_FILE"
+
                     output="Created new pane: $new_pane_id"
                     echo "$output"
                     ;;
@@ -220,6 +244,24 @@ main() {
                     output=""
                     ;;
                 close)
+                    shift 2  # skip "session" and "close"
+                    target=""
+                    while [ $# -gt 0 ]; do
+                        case "$1" in
+                            -s|--session) target="$2"; shift 2 ;;
+                            --force|-f) shift ;;
+                            *) shift ;;
+                        esac
+                    done
+                    if [ -n "$target" ]; then
+                        wezterm cli kill-pane --pane-id "$target" 2>/dev/null || true
+                        # Remove from grid-panes
+                        if [ -f "$STATE_DIR/grid-panes" ]; then
+                            tmp="$STATE_DIR/grid-panes.tmp"
+                            grep -v "^${target}$" "$STATE_DIR/grid-panes" > "$tmp" 2>/dev/null || true
+                            mv "$tmp" "$STATE_DIR/grid-panes"
+                        fi
+                    fi
                     output="Session closed"
                     echo "$output"
                     ;;
