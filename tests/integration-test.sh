@@ -126,6 +126,34 @@ else
     fail "log entries have [timestamp] ARGV: format" "format mismatch"
 fi
 
+# Test 14: wezcld --version with VERSION file
+echo "1.2.3" > "$SHIM_DIR/VERSION"
+version_output=$("$SHIM_DIR/bin/wezcld" --version 2>&1)
+rm -f "$SHIM_DIR/VERSION"
+if [ "$version_output" = "wezcld 1.2.3" ]; then
+    pass "wezcld --version with VERSION file outputs 'wezcld 1.2.3'"
+else
+    fail "wezcld --version with VERSION file outputs 'wezcld 1.2.3'" "got '$version_output'"
+fi
+
+# Test 15: wezcld -v with VERSION file
+echo "1.2.3" > "$SHIM_DIR/VERSION"
+version_output=$("$SHIM_DIR/bin/wezcld" -v 2>&1)
+rm -f "$SHIM_DIR/VERSION"
+if [ "$version_output" = "wezcld 1.2.3" ]; then
+    pass "wezcld -v with VERSION file outputs 'wezcld 1.2.3'"
+else
+    fail "wezcld -v with VERSION file outputs 'wezcld 1.2.3'" "got '$version_output'"
+fi
+
+# Test 16: wezcld --version without VERSION file outputs 'wezcld dev'
+version_output=$("$SHIM_DIR/bin/wezcld" --version 2>&1)
+if [ "$version_output" = "wezcld dev" ]; then
+    pass "wezcld --version without VERSION file outputs 'wezcld dev'"
+else
+    fail "wezcld --version without VERSION file outputs 'wezcld dev'" "got '$version_output'"
+fi
+
 echo
 
 # ============================================================================
@@ -138,7 +166,7 @@ if [ "${TERM_PROGRAM:-}" = "WezTerm" ]; then
     # Clean state for tests
     rm -f "$WEZCLD_STATE/grid-panes"
 
-    # Test 14: First split creates pane above (--top)
+    # Test 17: First split creates pane above (--top)
     split1=$("$SHIM_DIR/bin/it2" session split -v 2>&1)
     pane1=$(echo "$split1" | sed 's/Created new pane: //')
     if echo "$pane1" | grep -qE "^[0-9]+$"; then
@@ -147,7 +175,7 @@ if [ "${TERM_PROGRAM:-}" = "WezTerm" ]; then
         fail "first split returns valid pane ID" "got '$split1'"
     fi
 
-    # Test 15: Grid-panes file has 1 entry
+    # Test 18: Grid-panes file has 1 entry
     grid_count=$(wc -l < "$WEZCLD_STATE/grid-panes" 2>/dev/null || echo "0")
     grid_count=$(echo "$grid_count" | tr -d ' ')
     if [ "$grid_count" -eq 1 ]; then
@@ -156,7 +184,7 @@ if [ "${TERM_PROGRAM:-}" = "WezTerm" ]; then
         fail "grid-panes has 1 entry after first split" "got $grid_count"
     fi
 
-    # Test 16: Second split creates pane to the right
+    # Test 19: Second split creates pane to the right
     split2=$("$SHIM_DIR/bin/it2" session split -s "$pane1" 2>&1)
     pane2=$(echo "$split2" | sed 's/Created new pane: //')
     if echo "$pane2" | grep -qE "^[0-9]+$"; then
@@ -165,7 +193,7 @@ if [ "${TERM_PROGRAM:-}" = "WezTerm" ]; then
         fail "second split returns valid pane ID" "got '$split2'"
     fi
 
-    # Test 17: Third split creates pane to the right (fills row 1)
+    # Test 20: Third split creates pane to the right (fills row 1)
     split3=$("$SHIM_DIR/bin/it2" session split -s "$pane2" 2>&1)
     pane3=$(echo "$split3" | sed 's/Created new pane: //')
     if echo "$pane3" | grep -qE "^[0-9]+$"; then
@@ -174,7 +202,7 @@ if [ "${TERM_PROGRAM:-}" = "WezTerm" ]; then
         fail "third split returns valid pane ID" "got '$split3'"
     fi
 
-    # Test 18: Fourth split creates new row (--bottom from pane1)
+    # Test 21: Fourth split creates new row (--bottom from pane1)
     split4=$("$SHIM_DIR/bin/it2" session split -s "$pane3" 2>&1)
     pane4=$(echo "$split4" | sed 's/Created new pane: //')
     if echo "$pane4" | grep -qE "^[0-9]+$"; then
@@ -183,7 +211,7 @@ if [ "${TERM_PROGRAM:-}" = "WezTerm" ]; then
         fail "fourth split (new row) returns valid pane ID" "got '$split4'"
     fi
 
-    # Test 19: Grid-panes file has 4 entries
+    # Test 22: Grid-panes file has 4 entries
     grid_count=$(wc -l < "$WEZCLD_STATE/grid-panes" 2>/dev/null || echo "0")
     grid_count=$(echo "$grid_count" | tr -d ' ')
     if [ "$grid_count" -eq 4 ]; then
@@ -192,7 +220,7 @@ if [ "${TERM_PROGRAM:-}" = "WezTerm" ]; then
         fail "grid-panes has 4 entries after 4 splits" "got $grid_count"
     fi
 
-    # Test 20: Session close kills pane and removes from grid
+    # Test 23: Session close kills pane and removes from grid
     "$SHIM_DIR/bin/it2" session close -s "$pane4" >/dev/null 2>&1
     grid_count=$(wc -l < "$WEZCLD_STATE/grid-panes" 2>/dev/null || echo "0")
     grid_count=$(echo "$grid_count" | tr -d ' ')
@@ -202,7 +230,7 @@ if [ "${TERM_PROGRAM:-}" = "WezTerm" ]; then
         fail "session close removes pane from grid" "got $grid_count entries"
     fi
 
-    # Test 21: Session run sends command to pane
+    # Test 24: Session run sends command to pane
     if "$SHIM_DIR/bin/it2" session run -s "$pane1" "echo test" 2>&1 >/dev/null; then
         pass "session run sends command to target pane"
     else
