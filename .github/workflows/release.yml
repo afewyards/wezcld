@@ -21,16 +21,6 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           allow-initial-development-versions: true
 
-      - name: Update VERSION file
-        if: steps.semrel.outputs.version != ''
-        run: |
-          echo "${{ steps.semrel.outputs.version }}" > VERSION
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add VERSION
-          git commit -m "chore(release): ${{ steps.semrel.outputs.version }} [skip ci]"
-          git push
-
       - name: Prepare release assets
         if: steps.semrel.outputs.version != ''
         run: |
