@@ -194,7 +194,7 @@ main() {
                     # Determine split direction and target pane
                     if [ "$row" -eq 0 ] && [ "$col" -eq 0 ]; then
                         # First agent: split from leader (top)
-                        new_pane_id=$(wezterm cli split-pane --top --percent 80)
+                        new_pane_id=$(wezterm cli split-pane --top --percent 60)
                     elif [ "$row" -eq 0 ]; then
                         # Filling first row: split right from previous pane
                         previous_pane=$(tail -n 1 "$GRID_FILE")
