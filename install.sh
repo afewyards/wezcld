@@ -444,7 +444,7 @@ exec claude --teammate-mode tmux "$@"
 WEZCLD_EOF
 
 cat > "$INSTALL_DIR/VERSION" << 'VERSION_EOF'
-0.0.0
+0.1.0
 VERSION_EOF
 
 # Make scripts executable
