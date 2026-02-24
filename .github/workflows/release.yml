@@ -21,21 +21,13 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           allow-initial-development-versions: true
 
-      - name: Prepare release assets
+      - name: Upload release assets
         if: steps.semrel.outputs.version != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dist
           sed 's/wezcld dev/wezcld ${{ steps.semrel.outputs.version }}/' bin/wezcld > dist/wezcld
           cp bin/it2 dist/it2
           cp install.sh dist/install.sh
-
-      - name: Create GitHub Release
-        if: steps.semrel.outputs.version != ''
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.semrel.outputs.version }}
-          files: |
-            dist/install.sh
-            dist/wezcld
-            dist/it2
-          generate_release_notes: true
+          gh release upload "v${{ steps.semrel.outputs.version }}" dist/install.sh dist/wezcld dist/it2
