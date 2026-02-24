@@ -64,7 +64,7 @@ export PATH="$SHIM_DIR/bin:$PATH"
     while kill -0 "$PARENT" 2>/dev/null; do
         sleep 1
     done
-    grid_file="$STATE_DIR/grid-panes"
+    grid_file="$STATE_DIR/grid-panes-${WEZTERM_PANE}"
     [ -f "$grid_file" ] || exit 0
     while IFS= read -r pane_id; do
         [ -n "$pane_id" ] || continue
