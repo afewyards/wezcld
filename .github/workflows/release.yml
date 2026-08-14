@@ -30,4 +30,4 @@ jobs:
           sed 's/wezcld dev/wezcld ${{ steps.semrel.outputs.version }}/' bin/wezcld > dist/wezcld
           cp bin/it2 dist/it2
           cp install.sh dist/install.sh
-          gh release upload "v${{ steps.semrel.outputs.version }}" dist/install.sh dist/wezcld dist/it2
+          gh release upload --clobber "v${{ steps.semrel.outputs.version }}" dist/install.sh dist/wezcld dist/it2
