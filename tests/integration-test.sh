@@ -18,6 +18,11 @@ WEZCLD_STATE="$(mktemp -d)"
 export WEZCLD_STATE
 trap 'rm -rf "$WEZCLD_STATE"' EXIT
 
+# Pin the grid key so tests know which state file the shim writes
+WEZCLD_LEADER_PANE="${WEZTERM_PANE:-0}"
+export WEZCLD_LEADER_PANE
+GRID_FILE="$WEZCLD_STATE/grid-panes-$WEZCLD_LEADER_PANE"
+
 echo "Testing wezcld - it2 shim"
 echo "=========================="
 echo
@@ -145,6 +150,142 @@ fi
 echo
 
 # ============================================================================
+# Group 1b: Command translation against a stubbed `wezterm` (always run)
+# ============================================================================
+echo "Group 1b: Command translation (stubbed wezterm)"
+echo "-----------------------------------------------"
+
+STUB_DIR="$WEZCLD_STATE/stub-bin"
+mkdir -p "$STUB_DIR"
+cat > "$STUB_DIR/wezterm" << 'STUB'
+#!/bin/sh
+# Record argv and, for send-text, stdin, so tests can assert on what was sent.
+{
+    printf 'ARGV:'
+    for a in "$@"; do printf ' [%s]' "$a"; done
+    printf '\n'
+    if [ "${2:-}" = "send-text" ]; then
+        printf 'STDIN:'
+        cat
+    fi
+} >> "$WEZTERM_STUB_LOG"
+exit 0
+STUB
+chmod +x "$STUB_DIR/wezterm"
+
+WEZTERM_STUB_LOG="$WEZCLD_STATE/wezterm-stub.log"
+export WEZTERM_STUB_LOG
+
+run_with_stub() {
+    : > "$WEZTERM_STUB_LOG"
+    PATH="$STUB_DIR:$PATH" "$SHIM_DIR/bin/it2" "$@" >/dev/null 2>&1
+}
+
+sent_text() {
+    sed -n 's/^STDIN://p' "$WEZTERM_STUB_LOG"
+}
+
+# Test 30: a single command argument is forwarded verbatim
+run_with_stub session run -s 7 "echo hi"
+if [ "$(sent_text)" = "echo hi" ]; then
+    pass "session run forwards a single command argument verbatim"
+else
+    fail "session run forwards a single command argument verbatim" "got '$(sent_text)'"
+fi
+
+# Test 31: multi-word arguments keep their boundaries instead of being flattened
+run_with_stub session run -s 7 claude -p "do a thing"
+if [ "$(sent_text)" = "claude -p 'do a thing'" ]; then
+    pass "session run quotes multi-word arguments"
+else
+    fail "session run quotes multi-word arguments" "got '$(sent_text)'"
+fi
+
+# Test 32: shell metacharacters in an argument cannot reach the target shell
+run_with_stub session run -s 7 echo 'a; rm -rf /tmp/nope'
+if [ "$(sent_text)" = "echo 'a; rm -rf /tmp/nope'" ]; then
+    pass "session run neutralises shell metacharacters"
+else
+    fail "session run neutralises shell metacharacters" "got '$(sent_text)'"
+fi
+
+# Test 33: embedded single quotes survive the round trip
+run_with_stub session run -s 7 echo "it's"
+if [ "$(sent_text)" = "echo 'it'\\''s'" ]; then
+    pass "session run escapes embedded single quotes"
+else
+    fail "session run escapes embedded single quotes" "got '$(sent_text)'"
+fi
+
+# Test 34: session run without a target sends nothing
+run_with_stub session run "echo hi"
+if [ ! -s "$WEZTERM_STUB_LOG" ]; then
+    pass "session run without -s sends nothing"
+else
+    fail "session run without -s sends nothing" "stub was invoked"
+fi
+
+# Test 35: session close kills the requested pane
+run_with_stub session close -s 42
+if grep -q 'ARGV: \[cli\] \[kill-pane\] \[--pane-id\] \[42\]' "$WEZTERM_STUB_LOG"; then
+    pass "session close kills the requested pane"
+else
+    fail "session close kills the requested pane" "got '$(cat "$WEZTERM_STUB_LOG")'"
+fi
+
+echo
+
+# ============================================================================
+# Group 1c: Uninstall safety (always run, sandboxed HOME)
+# ============================================================================
+echo "Group 1c: Uninstall safety"
+echo "--------------------------"
+
+FAKE_HOME="$WEZCLD_STATE/fake-home"
+mkdir -p "$FAKE_HOME/dotfiles" "$FAKE_HOME/.local/bin"
+
+# An rc file symlinked into a dotfiles repo, as stow/chezmoi users have
+printf 'export FOO=1\nexport PATH="$HOME/.local/bin:$PATH" # wezcld\n' > "$FAKE_HOME/dotfiles/zshrc"
+ln -s "$FAKE_HOME/dotfiles/zshrc" "$FAKE_HOME/.zshrc"
+
+# A real `tmux` and a real `it2` that wezcld must not touch
+printf '#!/bin/sh\necho real tmux\n' > "$FAKE_HOME/.local/bin/tmux"
+printf '#!/bin/sh\necho real it2\n' > "$FAKE_HOME/.local/bin/it2"
+chmod +x "$FAKE_HOME/.local/bin/tmux" "$FAKE_HOME/.local/bin/it2"
+
+HOME="$FAKE_HOME" "$SHIM_DIR/bin/wezcld" --uninstall >/dev/null 2>&1 || true
+
+# Test 36: the rc file is still a symlink into the dotfiles repo
+if [ -L "$FAKE_HOME/.zshrc" ]; then
+    pass "uninstall keeps a symlinked rc file a symlink"
+else
+    fail "uninstall keeps a symlinked rc file a symlink" "symlink was replaced"
+fi
+
+# Test 37: only the wezcld line was removed
+if [ "$(cat "$FAKE_HOME/dotfiles/zshrc")" = "export FOO=1" ]; then
+    pass "uninstall removes only the wezcld PATH line"
+else
+    fail "uninstall removes only the wezcld PATH line" "got '$(cat "$FAKE_HOME/dotfiles/zshrc")'"
+fi
+
+# Test 38: a foreign tmux on PATH is left alone
+if [ -f "$FAKE_HOME/.local/bin/tmux" ]; then
+    pass "uninstall leaves a foreign tmux alone"
+else
+    fail "uninstall leaves a foreign tmux alone" "tmux was deleted"
+fi
+
+# Test 39: a real it2 that wezcld did not write is left alone
+if [ -f "$FAKE_HOME/.local/bin/it2" ]; then
+    pass "uninstall leaves a foreign it2 alone"
+else
+    fail "uninstall leaves a foreign it2 alone" "it2 was deleted"
+fi
+
+echo
+
+# ============================================================================
 # Group 2: Live WezTerm grid layout tests (conditional)
 # ============================================================================
 if [ "${TERM_PROGRAM:-}" = "WezTerm" ]; then
@@ -152,7 +293,7 @@ if [ "${TERM_PROGRAM:-}" = "WezTerm" ]; then
     echo "----------------------------------------"
 
     # Clean state for tests
-    rm -f "$WEZCLD_STATE/grid-panes"
+    rm -f "$GRID_FILE"
 
     # Test 20: First split creates pane above (--top)
     split1=$("$SHIM_DIR/bin/it2" session split -v 2>&1)
@@ -164,7 +305,7 @@ if [ "${TERM_PROGRAM:-}" = "WezTerm" ]; then
     fi
 
     # Test 21: Grid-panes file has 1 entry
-    grid_count=$(wc -l < "$WEZCLD_STATE/grid-panes" 2>/dev/null || echo "0")
+    grid_count=$(wc -l < "$GRID_FILE" 2>/dev/null || echo "0")
     grid_count=$(echo "$grid_count" | tr -d ' ')
     if [ "$grid_count" -eq 1 ]; then
         pass "grid-panes has 1 entry after first split"
@@ -200,7 +341,7 @@ if [ "${TERM_PROGRAM:-}" = "WezTerm" ]; then
     fi
 
     # Test 25: Grid-panes file has 4 entries
-    grid_count=$(wc -l < "$WEZCLD_STATE/grid-panes" 2>/dev/null || echo "0")
+    grid_count=$(wc -l < "$GRID_FILE" 2>/dev/null || echo "0")
     grid_count=$(echo "$grid_count" | tr -d ' ')
     if [ "$grid_count" -eq 4 ]; then
         pass "grid-panes has 4 entries after 4 splits"
@@ -210,7 +351,7 @@ if [ "${TERM_PROGRAM:-}" = "WezTerm" ]; then
 
     # Test 26: Session close kills pane and removes from grid
     "$SHIM_DIR/bin/it2" session close -s "$pane4" >/dev/null 2>&1
-    grid_count=$(wc -l < "$WEZCLD_STATE/grid-panes" 2>/dev/null || echo "0")
+    grid_count=$(wc -l < "$GRID_FILE" 2>/dev/null || echo "0")
     grid_count=$(echo "$grid_count" | tr -d ' ')
     if [ "$grid_count" -eq 3 ]; then
         pass "session close removes pane from grid ($grid_count entries)"
