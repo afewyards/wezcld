@@ -1,139 +1,336 @@
 #!/bin/sh
 # it2 - iTerm2 CLI shim for wezcld
-# Logs all invocations and returns fake responses for observation mode
+# Logs all invocations and translates supported commands into `wezterm cli` calls
 
 set -eu
 
-# Determine state directory
+# Determine state directory. State holds the call log and grid bookkeeping, both
+# of which can contain command text, so keep it private to the user.
 STATE_DIR="${WEZCLD_STATE:-$HOME/.local/state/wezcld}"
+umask 077
 mkdir -p "$STATE_DIR"
+chmod 700 "$STATE_DIR" 2>/dev/null || true
 
 LOG_FILE="$STATE_DIR/it2-calls.log"
-COUNTER_DIR="$STATE_DIR/it2-counter"
+LOG_MAX_BYTES="${WEZCLD_LOG_MAX_BYTES:-1048576}"
 
-# Atomic counter for fake session IDs
-get_next_session_id() {
-    # Use mkdir as atomic lock
-    lock_acquired=0
-    counter=0
+# Grid state is keyed by the session leader's pane. wezcld exports
+# WEZCLD_LEADER_PANE so every it2 call in the leader's process tree shares one
+# grid no matter which pane the caller itself lives in. The fallbacks keep
+# `set -u` from aborting mid-command when it2 runs outside WezTerm.
+LEADER_PANE="${WEZCLD_LEADER_PANE:-${WEZTERM_PANE:-0}}"
+GRID_FILE="$STATE_DIR/grid-panes-$LEADER_PANE"
+LOCK_DIR="$GRID_FILE.lock"
 
-    # Detect and remove stale lock
-    if [ -d "$COUNTER_DIR.lock" ]; then
-        lock_pid=$(cat "$COUNTER_DIR.lock/pid" 2>/dev/null || echo "")
-        if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
-            rmdir "$COUNTER_DIR.lock" 2>/dev/null || true
-        fi
+MAX_COLS=3
+
+# `sleep` with a fractional argument is not POSIX; fall back to a whole second
+# on shells that ship a strict sleep.
+nap() { sleep 0.2 2>/dev/null || sleep 1; }
+
+# --- Locking ---------------------------------------------------------------
+# mkdir is the atomic primitive. The pid file is published straight after and is
+# only ever used to reclaim a lock whose holder died.
+
+LOCK_HELD=""
+
+reclaim_stale_lock() {
+    [ -d "$LOCK_DIR" ] || return 0
+    lock_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
+    if [ -z "$lock_pid" ]; then
+        # A live holder may simply be between mkdir and publishing its pid.
+        # Give it a moment before assuming it died inside that window.
+        nap
+        lock_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
     fi
-
-    for _ in 1 2 3; do
-        if mkdir "$COUNTER_DIR.lock" 2>/dev/null; then
-            lock_acquired=1
-            echo "$$" > "$COUNTER_DIR.lock/pid"
-            break
-        fi
-        sleep 1
-    done
-
-    if [ "$lock_acquired" = 0 ]; then
-        # Fallback if lock fails after 3 retries
-        echo "0"
-        return
+    if [ -z "$lock_pid" ] || ! kill -0 "$lock_pid" 2>/dev/null; then
+        rm -f "$LOCK_DIR/pid"
+        rmdir "$LOCK_DIR" 2>/dev/null || true
     fi
-
-    # Read current counter
-    if [ -f "$COUNTER_DIR" ]; then
-        counter=$(cat "$COUNTER_DIR")
-    else
-        counter=0
-    fi
-
-    # Increment and write back
-    counter=$((counter + 1))
-    echo "$counter" > "$COUNTER_DIR"
-
-    # Release lock
-    rm -f "$COUNTER_DIR.lock/pid"
-    rmdir "$COUNTER_DIR.lock"
-
-    echo "$counter"
 }
 
-# Log invocation with ISO timestamp
-log_call() {
-    timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-    exit_code="$1"
-    shift
-    output="$*"
-
-    printf '[%s] ARGV: %s | EXIT: %d | STDOUT: %s\n' \
-        "$timestamp" "$ARGV_STR" "$exit_code" "$output" >> "$LOG_FILE"
-}
-
-# Grid-panes file locking (mkdir-based atomic lock)
 grid_lock() {
-    lock_dir="$STATE_DIR/grid-panes-${WEZTERM_PANE}.lock"
-    # Detect and remove stale lock
-    if [ -d "$lock_dir" ]; then
-        lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
-        if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
-            rm -f "$lock_dir/pid"
-            rmdir "$lock_dir" 2>/dev/null || true
-        fi
-    fi
+    reclaim_stale_lock
     for _ in 1 2 3 4 5; do
-        if mkdir "$lock_dir" 2>/dev/null; then
-            echo "$$" > "$lock_dir/pid"
+        if mkdir "$LOCK_DIR" 2>/dev/null; then
+            echo "$$" > "$LOCK_DIR/pid"
+            LOCK_HELD=1
             return 0
         fi
-        sleep 0.2
+        nap
     done
     return 1
 }
 
 grid_unlock() {
-    rm -f "$STATE_DIR/grid-panes-${WEZTERM_PANE}.lock/pid"
-    rmdir "$STATE_DIR/grid-panes-${WEZTERM_PANE}.lock" 2>/dev/null || true
+    LOCK_HELD=""
+    rm -f "$LOCK_DIR/pid"
+    rmdir "$LOCK_DIR" 2>/dev/null || true
 }
 
-# Remove pane IDs from grid-panes that no longer exist in WezTerm
+# Release the lock on every exit path, including `set -e` aborts and signals.
+cleanup() {
+    [ -n "$LOCK_HELD" ] && grid_unlock
+    return 0
+}
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+
+# --- Helpers ---------------------------------------------------------------
+
+# Quote a string so the receiving shell reads it back as one literal argument,
+# whatever it contains. Tokens made only of characters no shell reinterprets are
+# passed through untouched — the command is typed into a visible pane and lands
+# in its history, so it should stay readable.
+shquote() {
+    case "$1" in
+        '')
+            printf "''"
+            ;;
+        *[!A-Za-z0-9_@%+=:,./-]*)
+            printf "'"
+            printf '%s' "$1" | sed "s/'/'\\\\''/g"
+            printf "'"
+            ;;
+        *)
+            printf '%s' "$1"
+            ;;
+    esac
+}
+
+rotate_log() {
+    [ -f "$LOG_FILE" ] || return 0
+    size=$(wc -c < "$LOG_FILE" 2>/dev/null | tr -d ' ')
+    [ "${size:-0}" -gt "$LOG_MAX_BYTES" ] || return 0
+    mv "$LOG_FILE" "$LOG_FILE.1"
+}
+
+# Log invocation with ISO timestamp
+log_call() {
+    exit_code="$1"
+    shift
+    output="$*"
+    timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+    rotate_log
+    printf '[%s] ARGV: %s | EXIT: %d | STDOUT: %s\n' \
+        "$timestamp" "$ARGV_STR" "$exit_code" "$output" >> "$LOG_FILE"
+}
+
+# Remove pane IDs from the grid file that no longer exist in WezTerm
 prune_stale_panes() {
-    grid_file="$STATE_DIR/grid-panes-${WEZTERM_PANE}"
-    [ -f "$grid_file" ] || return 0
-    [ -s "$grid_file" ] || return 0
+    [ -s "$GRID_FILE" ] || return 0
 
-    # Get live pane IDs; skip pruning if wezterm cli fails
-    live_output=$(wezterm cli list 2>/dev/null) || return 0
-    live_panes=$(printf '%s\n' "$live_output" | awk 'NR>1 {print $3}')
+    # Ask for JSON instead of parsing the human-readable table by column
+    # position — the table layout is not a stable interface.
+    live_json=$(wezterm cli list --format json 2>/dev/null) || return 0
+    live_panes=$(printf '%s' "$live_json" | tr ',' '\n' |
+        sed -n 's/.*"pane_id"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')
+    # Refuse to prune on an unrecognised response rather than dropping the grid.
+    [ -n "$live_panes" ] || return 0
 
-    tmp="$grid_file.prune.$$"
+    tmp="$GRID_FILE.prune.$$"
     : > "$tmp"
     while IFS= read -r pane_id; do
         [ -n "$pane_id" ] || continue
         if printf '%s\n' "$live_panes" | grep -qx "$pane_id"; then
             printf '%s\n' "$pane_id" >> "$tmp"
         fi
-    done < "$grid_file"
-    mv "$tmp" "$grid_file"
+    done < "$GRID_FILE"
+    mv "$tmp" "$GRID_FILE"
 }
+
+# --- Commands --------------------------------------------------------------
+# Each command runs in the current shell (never a command substitution) so that
+# the lock bookkeeping, the EXIT trap and `exit` all act on the real process. It
+# reports what it printed by assigning to `output`, which main() then logs.
+
+# Create a pane in the next free grid slot. `-s <parent>` is accepted for
+# compatibility but ignored: placement is decided by the grid, not the caller.
+do_split() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -s|--session)
+                shift
+                if [ $# -gt 0 ]; then shift; fi
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    grid_lock || { echo "Failed to acquire grid lock" >&2; exit 1; }
+
+    # Prune stale panes before calculating positions
+    prune_stale_panes
+
+    # Count existing panes
+    agent_count=0
+    if [ -f "$GRID_FILE" ]; then
+        agent_count=$(wc -l < "$GRID_FILE" 2>/dev/null | tr -d ' ')
+    fi
+
+    # Calculate grid position
+    row=$((agent_count / MAX_COLS))
+    col=$((agent_count % MAX_COLS))
+
+    # Determine split direction and target pane
+    new_pane_id=""
+    if [ "$row" -eq 0 ] && [ "$col" -eq 0 ]; then
+        # First agent: split from leader (top)
+        new_pane_id=$(wezterm cli split-pane --top --percent 65 --pane-id "$LEADER_PANE") || true
+    elif [ "$row" -eq 0 ]; then
+        # Filling first row: split right from previous pane
+        previous_pane=$(tail -n 1 "$GRID_FILE")
+        # Calculate percent so all columns end up equal width
+        remaining=$((MAX_COLS - col))
+        pct=$(( (100 * remaining + (remaining + 1) / 2) / (remaining + 1) ))
+        new_pane_id=$(wezterm cli split-pane --right --percent "$pct" --pane-id "$previous_pane") || true
+    else
+        # New row: split bottom from pane above (same column)
+        pane_above_index=$((agent_count - MAX_COLS + 1))
+        pane_above=$(sed -n "${pane_above_index}p" "$GRID_FILE")
+        new_pane_id=$(wezterm cli split-pane --bottom --pane-id "$pane_above") || true
+    fi
+
+    if [ -z "$new_pane_id" ]; then
+        echo "Failed to create split pane" >&2
+        exit 1
+    fi
+
+    # Append to grid-panes file
+    echo "$new_pane_id" >> "$GRID_FILE"
+
+    grid_unlock
+
+    # Refocus leader pane
+    wezterm cli activate-pane --pane-id "$LEADER_PANE" 2>/dev/null || true
+
+    output="Created new pane: $new_pane_id"
+    echo "$output"
+}
+
+# Type a command into a target pane. Argument quoting has to survive the trip:
+# the text is handed to an interactive shell, which re-parses it.
+do_run() {
+    target=""
+    remaining=$#
+    while [ "$remaining" -gt 0 ]; do
+        case "$1" in
+            -s|--session)
+                shift
+                remaining=$((remaining - 1))
+                if [ $# -gt 0 ]; then
+                    target="$1"
+                    shift
+                    remaining=$((remaining - 1))
+                fi
+                ;;
+            *)
+                # Rotate non-flag arguments to the back so "$@" ends up holding
+                # the command, in order, with its argument boundaries intact.
+                arg="$1"
+                shift
+                set -- "$@" "$arg"
+                remaining=$((remaining - 1))
+                ;;
+        esac
+    done
+
+    [ -n "$target" ] || return 0
+    [ $# -gt 0 ] || return 0
+
+    if [ $# -eq 1 ]; then
+        # A single argument is already a complete command line — send it as-is
+        # so callers can pass their own quoting through untouched.
+        cmd="$1"
+    else
+        cmd=""
+        for arg in "$@"; do
+            if [ -z "$cmd" ]; then
+                cmd=$(shquote "$arg")
+            else
+                cmd="$cmd $(shquote "$arg")"
+            fi
+        done
+    fi
+
+    printf '%s\n' "$cmd" | wezterm cli send-text --no-paste --pane-id "$target"
+}
+
+do_close() {
+    target=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -s|--session)
+                shift
+                if [ $# -gt 0 ]; then target="$1"; shift; fi
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    if [ -n "$target" ]; then
+        wezterm cli kill-pane --pane-id "$target" 2>/dev/null || true
+        # Remove from grid-panes (under lock)
+        if grid_lock; then
+            if [ -f "$GRID_FILE" ]; then
+                tmp="$GRID_FILE.tmp"
+                grep -v "^${target}$" "$GRID_FILE" > "$tmp" 2>/dev/null || true
+                mv "$tmp" "$GRID_FILE"
+            fi
+            grid_unlock
+        fi
+    fi
+
+    output="Session closed"
+    echo "$output"
+}
+
+# --- Entry point -----------------------------------------------------------
 
 # Store original arguments for logging
 ARGV_STR="it2"
 for arg in "$@"; do
     # Sanitize: replace newlines with spaces, wrap args with special chars in single quotes
-    sanitized=$(printf '%s' "$arg" | tr '\n' ' ')
+    sanitized=$(printf '%s' "$arg" | tr '\n\r' '  ')
     case "$sanitized" in
         *[\ \"\|]*) ARGV_STR="$ARGV_STR '${sanitized}'" ;;
         *) ARGV_STR="$ARGV_STR $sanitized" ;;
     esac
 done
 
-# Dispatch based on arguments
+# Dispatch based on arguments. The short forms (`it2 split`) and the long forms
+# (`it2 session split`) run the same implementation — they used to diverge, with
+# the short forms handing back invented session IDs that no later call could use.
 main() {
-    exit_code=0  # Always 0 for Phase 1 — all commands fake success
+    exit_code=0
     output=""
 
-    case "${1:-}" in
-        --version)
+    # Fold "session split" into a single verb so the long and short forms can
+    # share a case arm. `shift` is guarded: dash treats an over-long shift as a
+    # fatal error, so it must never be asked to shift past the end.
+    verb="${1:-}"
+    case "$verb" in
+        session|app)
+            if [ $# -ge 2 ]; then
+                verb="$1 $2"
+                shift 2
+            else
+                shift
+            fi
+            ;;
+        *)
+            if [ $# -gt 0 ]; then shift; fi
+            ;;
+    esac
+
+    case "$verb" in
+        --version|"app version")
             output="it2 0.2.3"
             echo "$output"
             ;;
@@ -141,181 +338,22 @@ main() {
             output="it2 - iTerm2 CLI (wezcld shim)"
             echo "$output"
             ;;
-        app)
-            case "${2:-}" in
-                version)
-                    output="it2 0.2.3"
-                    echo "$output"
-                    ;;
-                *)
-                    output=""
-                    ;;
-            esac
+        split|vsplit|"session split")
+            do_split "$@"
             ;;
-        session)
-            case "${2:-}" in
-                split)
-                    # Parse -v flag and -s <parent> flag (parse for logging, but ignore -s for grid)
-                    shift 2  # skip "session" and "split"
-                    parent=""
-                    while [ $# -gt 0 ]; do
-                        case "$1" in
-                            -v|--vertical)
-                                # -v means vertical split
-                                shift
-                                ;;
-                            -s|--session)
-                                parent="$2"
-                                shift 2
-                                ;;
-                            *)
-                                shift
-                                ;;
-                        esac
-                    done
-
-                    # Grid layout algorithm (under lock)
-                    grid_lock || { echo "Failed to acquire grid lock" >&2; exit 1; }
-
-                    # Prune stale panes before calculating positions
-                    prune_stale_panes
-
-                    MAX_COLS=3
-                    GRID_FILE="$STATE_DIR/grid-panes-${WEZTERM_PANE}"
-
-                    # Count existing panes
-                    agent_count=0
-                    if [ -f "$GRID_FILE" ]; then
-                        agent_count=$(wc -l < "$GRID_FILE" 2>/dev/null | tr -d ' ')
-                    fi
-
-                    # Calculate grid position
-                    row=$((agent_count / MAX_COLS))
-                    col=$((agent_count % MAX_COLS))
-
-                    # Determine split direction and target pane
-                    new_pane_id=""
-                    if [ "$row" -eq 0 ] && [ "$col" -eq 0 ]; then
-                        # First agent: split from leader (top)
-                        new_pane_id=$(wezterm cli split-pane --top --percent 65 --pane-id "${WEZTERM_PANE}") || true
-                    elif [ "$row" -eq 0 ]; then
-                        # Filling first row: split right from previous pane
-                        previous_pane=$(tail -n 1 "$GRID_FILE")
-                        # Calculate percent so all columns end up equal width
-                        remaining=$((MAX_COLS - col))
-                        pct=$(( (100 * remaining + (remaining + 1) / 2) / (remaining + 1) ))
-                        new_pane_id=$(wezterm cli split-pane --right --percent "$pct" --pane-id "$previous_pane") || true
-                    else
-                        # New row: split bottom from pane above (same column)
-                        pane_above_index=$((agent_count - MAX_COLS + 1))
-                        pane_above=$(sed -n "${pane_above_index}p" "$GRID_FILE")
-                        new_pane_id=$(wezterm cli split-pane --bottom --pane-id "$pane_above") || true
-                    fi
-
-                    if [ -z "$new_pane_id" ]; then
-                        grid_unlock
-                        echo "Failed to create split pane" >&2
-                        exit 1
-                    fi
-
-                    # Append to grid-panes file
-                    echo "$new_pane_id" >> "$GRID_FILE"
-
-                    grid_unlock
-
-                    # Refocus leader pane
-                    wezterm cli activate-pane --pane-id "${WEZTERM_PANE:-0}" 2>/dev/null || true
-
-                    output="Created new pane: $new_pane_id"
-                    echo "$output"
-                    ;;
-                send|send-text)
-                    output=""
-                    ;;
-                run)
-                    # Parse -s <id> flag and command
-                    shift 2  # skip "session" and "run"
-                    target=""
-                    cmd=""
-                    while [ $# -gt 0 ]; do
-                        case "$1" in
-                            -s|--session)
-                                target="$2"
-                                shift 2
-                                ;;
-                            *)
-                                if [ -z "$cmd" ]; then
-                                    cmd="$1"
-                                else
-                                    cmd="$cmd $1"
-                                fi
-                                shift
-                                ;;
-                        esac
-                    done
-
-                    # Send command to target pane
-                    if [ -n "$target" ] && [ -n "$cmd" ]; then
-                        printf '%s\n' "$cmd" | wezterm cli send-text --no-paste --pane-id "$target"
-                    fi
-                    output=""
-                    ;;
-                close)
-                    shift 2  # skip "session" and "close"
-                    target=""
-                    while [ $# -gt 0 ]; do
-                        case "$1" in
-                            -s|--session) target="$2"; shift 2 ;;
-                            --force|-f) shift ;;
-                            *) shift ;;
-                        esac
-                    done
-                    if [ -n "$target" ]; then
-                        wezterm cli kill-pane --pane-id "$target" 2>/dev/null || true
-                        # Remove from grid-panes (under lock)
-                        if grid_lock; then
-                            grid_file="$STATE_DIR/grid-panes-${WEZTERM_PANE}"
-                        if [ -f "$grid_file" ]; then
-                                tmp="$grid_file.tmp"
-                                grep -v "^${target}$" "$grid_file" > "$tmp" 2>/dev/null || true
-                                mv "$tmp" "$grid_file"
-                            fi
-                            grid_unlock
-                        fi
-                    fi
-                    output="Session closed"
-                    echo "$output"
-                    ;;
-                list)
-                    output="Session ID       Name    Title           Size    TTY"
-                    echo "$output"
-                    ;;
-                focus|clear|restart)
-                    output=""
-                    ;;
-                *)
-                    output=""
-                    ;;
-            esac
+        run|"session run")
+            do_run "$@"
             ;;
-        split)
-            session_id=$(get_next_session_id)
-            output="Created new pane: fake-session-$session_id"
-            echo "$output"
+        close|"session close")
+            do_close "$@"
             ;;
-        send|run)
-            output=""
-            ;;
-        vsplit)
-            session_id=$(get_next_session_id)
-            output="Created new pane: fake-session-$session_id"
-            echo "$output"
-            ;;
-        ls)
+        ls|"session list")
             output="Session ID       Name    Title           Size    TTY"
             echo "$output"
             ;;
         *)
+            # Everything else is a silent success: unimplemented iTerm2 verbs
+            # must not look like failures to Claude Code.
             output=""
             ;;
     esac
