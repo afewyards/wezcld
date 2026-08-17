@@ -16,56 +16,117 @@ LOG_MAX_BYTES="${WEZCLD_LOG_MAX_BYTES:-1048576}"
 
 # Grid state is keyed by the session leader's pane. wezcld exports
 # WEZCLD_LEADER_PANE so every it2 call in the leader's process tree shares one
-# grid no matter which pane the caller itself lives in. The fallbacks keep
-# `set -u` from aborting mid-command when it2 runs outside WezTerm.
-LEADER_PANE="${WEZCLD_LEADER_PANE:-${WEZTERM_PANE:-0}}"
-GRID_FILE="$STATE_DIR/grid-panes-$LEADER_PANE"
-LOCK_DIR="$GRID_FILE.lock"
+# grid no matter which pane the caller itself lives in. It stays empty when
+# neither variable is set: guessing a pane here would mean splitting and killing
+# panes in some unrelated WezTerm window, so the grid commands refuse instead.
+LEADER_PANE="${WEZCLD_LEADER_PANE:-${WEZTERM_PANE:-}}"
+GRID_FILE=""
+LOCK_FILE=""
+REAP_FILE=""
+if [ -n "$LEADER_PANE" ]; then
+    GRID_FILE="$STATE_DIR/grid-panes-$LEADER_PANE"
+    LOCK_FILE="$GRID_FILE.lock"
+    REAP_FILE="$GRID_FILE.reap"
+fi
 
 MAX_COLS=3
 
-# `sleep` with a fractional argument is not POSIX; fall back to a whole second
-# on shells that ship a strict sleep.
-nap() { sleep 0.2 2>/dev/null || sleep 1; }
+# `sleep` with a fractional argument is not POSIX. Probe for it once, lazily, so
+# the common commands never pay for the probe, and size the retry budget to
+# match: either way waiting tops out at roughly six seconds.
+NAP_READY=""
+NAP_SECONDS=1
+NAP_MAX=6
+nap_init() {
+    [ -n "$NAP_READY" ] || {
+        NAP_READY=1
+        if sleep 0.05 2>/dev/null; then
+            NAP_SECONDS=0.05
+            NAP_MAX=120
+        fi
+    }
+}
+nap() { sleep "$NAP_SECONDS" 2>/dev/null || true; }
+
+require_leader_pane() {
+    [ -n "$LEADER_PANE" ] && return 0
+    echo "it2: no pane to work in (WEZTERM_PANE and WEZCLD_LEADER_PANE are unset)" >&2
+    return 1
+}
 
 # --- Locking ---------------------------------------------------------------
-# mkdir is the atomic primitive. The pid file is published straight after and is
-# only ever used to reclaim a lock whose holder died.
 
 LOCK_HELD=""
 
-reclaim_stale_lock() {
-    [ -d "$LOCK_DIR" ] || return 0
-    lock_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
-    if [ -z "$lock_pid" ]; then
-        # A live holder may simply be between mkdir and publishing its pid.
-        # Give it a moment before assuming it died inside that window.
-        nap
-        lock_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
+# Create $1 holding our pid, failing if it already exists. `set -C` makes the
+# redirection an exclusive create, so taking the lock and publishing the pid are
+# one atomic step — with a lock directory plus a separate pid file, a holder
+# killed between the two leaves a lock nothing can ever prove stale. `echo` is a
+# builtin, which matters: this is spun on, and forking `ln` or `mkdir` per
+# attempt would cost far more than the critical section being waited for.
+# The `2>/dev/null` has to come first: redirections are applied left to right,
+# and the shell reports a failed one on whatever stderr is current at the time.
+claim_file() {
+    set -C
+    if echo "$$" 2>/dev/null > "$1"; then
+        set +C
+        return 0
     fi
-    if [ -z "$lock_pid" ] || ! kill -0 "$lock_pid" 2>/dev/null; then
-        rm -f "$LOCK_DIR/pid"
-        rmdir "$LOCK_DIR" 2>/dev/null || true
-    fi
+    set +C
+    return 1
 }
 
+# Clear a lock whose holder is gone. Serialised through a second lock file so
+# two waiters cannot both decide to clear the same stale lock and have the loser
+# go on to delete the lock the winner has meanwhile taken for itself.
+reclaim_stale_lock() {
+    lock_pid=$(cat "$LOCK_FILE" 2>/dev/null) || return 0
+    [ -n "$lock_pid" ] || return 0
+    kill -0 "$lock_pid" 2>/dev/null && return 0
+
+    reap_pid=$(cat "$REAP_FILE" 2>/dev/null || echo "")
+    if [ -n "$reap_pid" ] && ! kill -0 "$reap_pid" 2>/dev/null; then
+        rm -f "$REAP_FILE"   # a reaper died inside its own critical section
+    fi
+    claim_file "$REAP_FILE" || return 0
+
+    # Re-read while holding the reaper lock: between the check above and here the
+    # dead holder's lock may already have been cleared and taken by a live one.
+    now_pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+    if [ "$now_pid" = "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
+        rm -f "$LOCK_FILE"
+    fi
+    rm -f "$REAP_FILE"
+}
+
+# Spin briefly, then wait. Sleeping 0.2s after every attempt with only five
+# attempts starved waiters badly — with several teammates closing panes at once
+# most of them ran out of retries and skipped their grid update — but spinning
+# the whole time is just as bad, since the CPU burnt is what the holder needs to
+# finish. So: a short spin for the common case, then yield on a bounded budget.
 grid_lock() {
-    reclaim_stale_lock
-    for _ in 1 2 3 4 5; do
-        if mkdir "$LOCK_DIR" 2>/dev/null; then
-            echo "$$" > "$LOCK_DIR/pid"
-            LOCK_HELD=1
-            return 0
-        fi
+    [ -n "$LOCK_FILE" ] || return 1
+
+    spins=0
+    while [ "$spins" -lt 30 ]; do
+        claim_file "$LOCK_FILE" && { LOCK_HELD=1; return 0; }
+        spins=$((spins + 1))
+    done
+
+    nap_init
+    waits=0
+    while [ "$waits" -lt "$NAP_MAX" ]; do
+        reclaim_stale_lock
         nap
+        claim_file "$LOCK_FILE" && { LOCK_HELD=1; return 0; }
+        waits=$((waits + 1))
     done
     return 1
 }
 
 grid_unlock() {
     LOCK_HELD=""
-    rm -f "$LOCK_DIR/pid"
-    rmdir "$LOCK_DIR" 2>/dev/null || true
+    rm -f "$LOCK_FILE"
 }
 
 # Release the lock on every exit path, including `set -e` aborts and signals.
@@ -99,11 +160,14 @@ shquote() {
     esac
 }
 
+# Logging happens after the work is done, so nothing in here may fail the
+# command: concurrent shims race on the same file, and a lost log line is not
+# worth reporting a send that actually succeeded as an error.
 rotate_log() {
     [ -f "$LOG_FILE" ] || return 0
-    size=$(wc -c < "$LOG_FILE" 2>/dev/null | tr -d ' ')
-    [ "${size:-0}" -gt "$LOG_MAX_BYTES" ] || return 0
-    mv "$LOG_FILE" "$LOG_FILE.1"
+    size=$(wc -c < "$LOG_FILE" 2>/dev/null | tr -d ' ') || return 0
+    [ "${size:-0}" -gt "$LOG_MAX_BYTES" ] 2>/dev/null || return 0
+    mv "$LOG_FILE" "$LOG_FILE.1" 2>/dev/null || true
 }
 
 # Log invocation with ISO timestamp
@@ -115,7 +179,7 @@ log_call() {
 
     rotate_log
     printf '[%s] ARGV: %s | EXIT: %d | STDOUT: %s\n' \
-        "$timestamp" "$ARGV_STR" "$exit_code" "$output" >> "$LOG_FILE"
+        "$timestamp" "$ARGV_STR" "$exit_code" "$output" >> "$LOG_FILE" 2>/dev/null || true
 }
 
 # Remove pane IDs from the grid file that no longer exist in WezTerm
@@ -125,8 +189,18 @@ prune_stale_panes() {
     # Ask for JSON instead of parsing the human-readable table by column
     # position — the table layout is not a stable interface.
     live_json=$(wezterm cli list --format json 2>/dev/null) || return 0
-    live_panes=$(printf '%s' "$live_json" | tr ',' '\n' |
-        sed -n 's/.*"pane_id"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')
+    if command -v jq >/dev/null 2>&1; then
+        live_panes=$(printf '%s' "$live_json" | jq -r '.[].pane_id' 2>/dev/null)
+    else
+        # No jq: split on commas and match only a fragment that *starts* with
+        # the key. Pane titles are content-controlled and can contain the text
+        # `"pane_id": 7`, but inside a JSON string its quotes arrive escaped, so
+        # such a fragment can never begin with a bare `"pane_id":` — an
+        # unanchored match here would let a title forge a live pane id and keep
+        # dead entries in the grid forever.
+        live_panes=$(printf '%s' "$live_json" | tr ',' '\n' | tr -d ' \t' |
+            sed -n 's/^"pane_id":\([0-9][0-9]*\)$/\1/p')
+    fi
     # Refuse to prune on an unrecognised response rather than dropping the grid.
     [ -n "$live_panes" ] || return 0
 
@@ -161,6 +235,7 @@ do_split() {
         esac
     done
 
+    require_leader_pane || exit 1
     grid_lock || { echo "Failed to acquire grid lock" >&2; exit 1; }
 
     # Prune stale panes before calculating positions
@@ -216,25 +291,33 @@ do_split() {
 # the text is handed to an interactive shell, which re-parses it.
 do_run() {
     target=""
-    remaining=$#
-    while [ "$remaining" -gt 0 ]; do
+    raw=""
+
+    # Options precede the command, and parsing stops at the first non-option.
+    # Scanning the whole argument list instead would let a `-s` belonging to the
+    # command be taken as ours: `session run -s 5 claude --session abc` would
+    # target pane `abc`, and `session run -s 5 sort -s -k1` would send a bare
+    # `sort` to a pane called `-k1`. `--` forces the command to start even when
+    # it begins with something option-shaped.
+    while [ $# -gt 0 ]; do
         case "$1" in
+            --)
+                shift
+                break
+                ;;
             -s|--session)
                 shift
-                remaining=$((remaining - 1))
-                if [ $# -gt 0 ]; then
-                    target="$1"
-                    shift
-                    remaining=$((remaining - 1))
-                fi
+                if [ $# -gt 0 ]; then target="$1"; shift; fi
+                ;;
+            --raw)
+                raw=1
+                shift
+                ;;
+            -*)
+                shift
                 ;;
             *)
-                # Rotate non-flag arguments to the back so "$@" ends up holding
-                # the command, in order, with its argument boundaries intact.
-                arg="$1"
-                shift
-                set -- "$@" "$arg"
-                remaining=$((remaining - 1))
+                break
                 ;;
         esac
     done
@@ -243,10 +326,22 @@ do_run() {
     [ $# -gt 0 ] || return 0
 
     if [ $# -eq 1 ]; then
-        # A single argument is already a complete command line — send it as-is
-        # so callers can pass their own quoting through untouched.
+        # One argument is a whole command line by contract, so it goes as-is —
+        # re-quoting it would turn `echo hi` into the name of a missing command.
         cmd="$1"
+    elif [ -n "$raw" ]; then
+        # `--raw` extends that to several arguments, for callers that assemble a
+        # command line out of pieces and want operators like `&&` to stay live.
+        # Joined explicitly rather than with "$*", which would follow an
+        # inherited IFS.
+        cmd="$1"
+        shift
+        for arg in "$@"; do
+            cmd="$cmd $arg"
+        done
     else
+        # Several arguments are an argv: quote each one so the receiving shell
+        # sees exactly the words the caller passed.
         cmd=""
         for arg in "$@"; do
             if [ -z "$cmd" ]; then
@@ -277,13 +372,19 @@ do_close() {
     if [ -n "$target" ]; then
         wezterm cli kill-pane --pane-id "$target" 2>/dev/null || true
         # Remove from grid-panes (under lock)
-        if grid_lock; then
-            if [ -f "$GRID_FILE" ]; then
-                tmp="$GRID_FILE.tmp"
-                grep -v "^${target}$" "$GRID_FILE" > "$tmp" 2>/dev/null || true
-                mv "$tmp" "$GRID_FILE"
+        if [ -n "$LOCK_FILE" ]; then
+            if grid_lock; then
+                if [ -f "$GRID_FILE" ]; then
+                    tmp="$GRID_FILE.tmp.$$"
+                    grep -v "^${target}$" "$GRID_FILE" > "$tmp" 2>/dev/null || true
+                    mv "$tmp" "$GRID_FILE"
+                fi
+                grid_unlock
+            else
+                # Say so rather than dropping the update on the floor: a stale id
+                # left in the grid misplaces every later split.
+                echo "it2: could not lock grid state; pane $target left in $GRID_FILE" >&2
             fi
-            grid_unlock
         fi
     fi
 
