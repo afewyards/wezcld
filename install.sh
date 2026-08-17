@@ -16,12 +16,16 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# --- shared:uninstall-helpers (keep byte-identical in bin/wezcld and install.sh) ---
+
 # Drop wezcld's PATH line from a shell rc file.
 #
 # Written through the original file rather than moved over it: an rc file is
 # very often a symlink into a dotfiles repo, and `mv` would replace the link
-# with a regular file and reset its mode. A backup is kept either way, and a
-# real grep failure leaves the file untouched instead of truncating it.
+# with a regular file and reset its mode. A backup is kept either way. Every
+# step warns and continues rather than failing — rc files are read-only under
+# nix and some stow setups, and one unwritable file must not abort the rest of
+# the uninstall or leave temp files behind.
 strip_wezcld_lines() {
     rc_file="$1"
     [ -f "$rc_file" ] || return 0
@@ -33,25 +37,54 @@ strip_wezcld_lines() {
     # grep exits 1 when it selects no lines at all, which is not an error here.
     if [ "$status" -gt 1 ]; then
         rm -f "$tmp"
-        printf "%s\n" "Warning: could not edit $rc_file; remove the '# wezcld' line by hand." >&2
+        echo "Warning: could not read $rc_file; remove the '# wezcld' line by hand." >&2
         return 0
     fi
 
-    cp "$rc_file" "${rc_file}.wezcld-backup"
-    cat "$tmp" > "$rc_file"
+    if ! cp "$rc_file" "${rc_file}.wezcld-backup" 2>/dev/null; then
+        rm -f "$tmp"
+        echo "Warning: could not back up $rc_file; remove the '# wezcld' line by hand." >&2
+        return 0
+    fi
+    if ! cat "$tmp" > "$rc_file" 2>/dev/null; then
+        rm -f "$tmp" "${rc_file}.wezcld-backup"
+        echo "Warning: $rc_file is not writable; remove the '# wezcld' line by hand." >&2
+        return 0
+    fi
     rm -f "$tmp"
-    printf "%s\n" "Removed PATH line from $rc_file (backup: ${rc_file}.wezcld-backup)"
+    echo "Removed PATH line from $rc_file (backup: ${rc_file}.wezcld-backup)"
 }
+
+# Remove a PATH wrapper only if wezcld is the one that wrote it. Older versions
+# installed two-line `exec` shims named `it2` and `tmux`; both names belong to
+# real software, so the file has to match that shim exactly. A substring match
+# on "wezcld" would delete a user's own wrapper — and a wezcld user's wrapper is
+# exactly the kind that mentions wezcld.
+remove_legacy_wrapper() {
+    wrapper="$1"
+    name="$2"
+    [ -f "$wrapper" ] || return 0
+    [ "$(wc -l < "$wrapper" 2>/dev/null | tr -d ' ')" = "2" ] || return 0
+    grep -qxF '#!/bin/sh' "$wrapper" 2>/dev/null || return 0
+    grep -qxF "exec \"\$HOME/.local/share/wezcld/bin/$name\" \"\$@\"" "$wrapper" 2>/dev/null || return 0
+    rm -f "$wrapper"
+    echo "Removed leftover wezcld $name wrapper: $wrapper"
+}
+
+# --- end shared:uninstall-helpers ---
 
 # --- Uninstall ---
 if [ "${1:-}" = "--uninstall" ]; then
+    # The installed launcher owns the uninstall; hand over to it so there is one
+    # implementation in play. The block below is the fallback for a partial or
+    # broken install, where that binary is missing.
+    if [ -x "$INSTALL_DIR/bin/wezcld" ]; then
+        exec "$INSTALL_DIR/bin/wezcld" --uninstall
+    fi
     echo "Uninstalling wezcld..."
     rm -f "$BIN_DIR/wezcld"
-    # Older versions also installed an `it2` wrapper here. Only remove it if it
-    # is ours — iTerm2 ships a real `it2` that users may have put on PATH.
-    if [ -f "$BIN_DIR/it2" ] && grep -q 'wezcld' "$BIN_DIR/it2" 2>/dev/null; then
-        rm -f "$BIN_DIR/it2"
-    fi
+    remove_legacy_wrapper "$BIN_DIR/it2" it2
+    remove_legacy_wrapper "$BIN_DIR/tmux" tmux
     rm -rf "$INSTALL_DIR"
     rm -rf "$STATE_DIR"
     for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
@@ -102,9 +135,12 @@ chmod +x "$INSTALL_DIR/bin/wezcld" "$INSTALL_DIR/bin/it2"
 # is reached through the PATH entry wezcld adds for its own child processes, so
 # it can never shadow — or overwrite — a real iTerm2 `it2` the user installed.
 rm -f "$BIN_DIR/wezcld"
-if [ -f "$BIN_DIR/it2" ] && grep -q 'wezcld' "$BIN_DIR/it2" 2>/dev/null; then
-    rm -f "$BIN_DIR/it2"   # leftover wrapper from an older wezcld
-fi
+
+# Clear the wrappers older versions put on PATH: `it2`, and `tmux` from the
+# tmux-polyfill era. Left in place, a stale wezcld `tmux` wrapper shadows the
+# real tmux forever. Both are removed only when they are demonstrably ours.
+remove_legacy_wrapper "$BIN_DIR/it2" it2
+remove_legacy_wrapper "$BIN_DIR/tmux" tmux
 
 # Create thin wrapper in BIN_DIR
 cat > "$BIN_DIR/wezcld" << 'WRAPPER_WEZCLD'
