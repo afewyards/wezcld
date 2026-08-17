@@ -1,21 +1,76 @@
 #!/bin/sh
 set -eu
 
+# --- shared:uninstall-helpers (keep byte-identical in bin/wezcld and install.sh) ---
+
+# Drop wezcld's PATH line from a shell rc file.
+#
+# Written through the original file rather than moved over it: an rc file is
+# very often a symlink into a dotfiles repo, and `mv` would replace the link
+# with a regular file and reset its mode. A backup is kept either way. Every
+# step warns and continues rather than failing — rc files are read-only under
+# nix and some stow setups, and one unwritable file must not abort the rest of
+# the uninstall or leave temp files behind.
+strip_wezcld_lines() {
+    rc_file="$1"
+    [ -f "$rc_file" ] || return 0
+    grep -q '# wezcld$' "$rc_file" 2>/dev/null || return 0
+
+    tmp="${rc_file}.wezcld-tmp.$$"
+    status=0
+    grep -v '# wezcld$' "$rc_file" > "$tmp" 2>/dev/null || status=$?
+    # grep exits 1 when it selects no lines at all, which is not an error here.
+    if [ "$status" -gt 1 ]; then
+        rm -f "$tmp"
+        echo "Warning: could not read $rc_file; remove the '# wezcld' line by hand." >&2
+        return 0
+    fi
+
+    if ! cp "$rc_file" "${rc_file}.wezcld-backup" 2>/dev/null; then
+        rm -f "$tmp"
+        echo "Warning: could not back up $rc_file; remove the '# wezcld' line by hand." >&2
+        return 0
+    fi
+    if ! cat "$tmp" > "$rc_file" 2>/dev/null; then
+        rm -f "$tmp" "${rc_file}.wezcld-backup"
+        echo "Warning: $rc_file is not writable; remove the '# wezcld' line by hand." >&2
+        return 0
+    fi
+    rm -f "$tmp"
+    echo "Removed PATH line from $rc_file (backup: ${rc_file}.wezcld-backup)"
+}
+
+# Remove a PATH wrapper only if wezcld is the one that wrote it. Older versions
+# installed two-line `exec` shims named `it2` and `tmux`; both names belong to
+# real software, so the file has to match that shim exactly. A substring match
+# on "wezcld" would delete a user's own wrapper — and a wezcld user's wrapper is
+# exactly the kind that mentions wezcld.
+remove_legacy_wrapper() {
+    wrapper="$1"
+    name="$2"
+    [ -f "$wrapper" ] || return 0
+    [ "$(wc -l < "$wrapper" 2>/dev/null | tr -d ' ')" = "2" ] || return 0
+    grep -qxF '#!/bin/sh' "$wrapper" 2>/dev/null || return 0
+    grep -qxF "exec \"\$HOME/.local/share/wezcld/bin/$name\" \"\$@\"" "$wrapper" 2>/dev/null || return 0
+    rm -f "$wrapper"
+    echo "Removed leftover wezcld $name wrapper: $wrapper"
+}
+
+# --- end shared:uninstall-helpers ---
+
 # Uninstall
 if [ "${1:-}" = "--uninstall" ]; then
     BIN_DIR="$HOME/.local/bin"
     INSTALL_DIR="$HOME/.local/share/wezcld"
     STATE_DIR="$HOME/.local/state/wezcld"
     echo "Uninstalling wezcld..."
-    rm -f "$BIN_DIR/wezcld" "$BIN_DIR/it2"
+    rm -f "$BIN_DIR/wezcld"
+    remove_legacy_wrapper "$BIN_DIR/it2" it2
+    remove_legacy_wrapper "$BIN_DIR/tmux" tmux
     rm -rf "$INSTALL_DIR"
     rm -rf "$STATE_DIR"
     for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-        if [ -f "$rc" ]; then
-            tmp="${rc}.wezcld-tmp"
-            grep -v '# wezcld$' "$rc" > "$tmp" || true
-            mv "$tmp" "$rc"
-        fi
+        strip_wezcld_lines "$rc"
     done
     echo "wezcld uninstalled."
     exit 0
@@ -45,18 +100,33 @@ if [ "${TERM_PROGRAM:-}" != "WezTerm" ]; then
     exec claude "$@"
 fi
 
-# Initialize state directory
+# Initialize state directory. It holds the it2 call log, which records the
+# command text sent to agent panes, so keep it private to the user.
+# The umask is restored straight after: claude inherits this environment, and a
+# 077 umask would follow it into every file it writes.
 STATE_DIR="${WEZCLD_STATE:-$HOME/.local/state/wezcld}"
+old_umask=$(umask)
+umask 077
 mkdir -p "$STATE_DIR"
+umask "$old_umask"
+chmod 700 "$STATE_DIR" 2>/dev/null || true
 
 # Override TERM_PROGRAM to trigger Claude Code's iTerm detection
 export TERM_PROGRAM="iTerm.app"
 export LC_TERMINAL="iTerm2"
 export ITERM_SESSION_ID="wezcld-$$"
 
-# Put our it2 shim first in PATH
+# Put our it2 shim first in PATH. Scoping it to this process tree is deliberate:
+# nothing named `it2` is installed globally, so a real iTerm2 CLI elsewhere on
+# PATH keeps working outside wezcld.
 export WEZCLD_STATE="$STATE_DIR"
 export PATH="$SHIM_DIR/bin:$PATH"
+
+# Pin the grid to this pane so every it2 call in the session shares one grid,
+# and so the watchdog below cleans up the same file the shim writes.
+LEADER_PANE="${WEZTERM_PANE:-0}"
+export WEZCLD_LEADER_PANE="$LEADER_PANE"
+GRID_FILE="$STATE_DIR/grid-panes-$LEADER_PANE"
 
 # Spawn detached watchdog that monitors our PID and cleans up panes after we die
 (
@@ -64,13 +134,12 @@ export PATH="$SHIM_DIR/bin:$PATH"
     while kill -0 "$PARENT" 2>/dev/null; do
         sleep 1
     done
-    grid_file="$STATE_DIR/grid-panes-${WEZTERM_PANE}"
-    [ -f "$grid_file" ] || exit 0
+    [ -f "$GRID_FILE" ] || exit 0
     while IFS= read -r pane_id; do
         [ -n "$pane_id" ] || continue
         wezterm cli kill-pane --pane-id "$pane_id" 2>/dev/null || true
-    done < "$grid_file"
-    rm -f "$grid_file"
+    done < "$GRID_FILE"
+    rm -f "$GRID_FILE"
 ) &
 
 # exec into claude so WezTerm sees the real process
