@@ -256,7 +256,10 @@ main() {
 
                     # Send command to target pane
                     if [ -n "$target" ] && [ -n "$cmd" ]; then
-                        printf '%s\n' "$cmd" | wezterm cli send-text --no-paste --pane-id "$target"
+                        # tty canonical mode drops input past 1024 bytes; send a short line instead
+                        f="$STATE_DIR/run-$target.sh"
+                        printf '%s\n' "$cmd" > "$f"
+                        printf '. %s\n' "$f" | wezterm cli send-text --no-paste --pane-id "$target"
                     fi
                     output=""
                     ;;

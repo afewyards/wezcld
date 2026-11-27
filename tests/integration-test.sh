@@ -225,6 +225,20 @@ if [ "${TERM_PROGRAM:-}" = "WezTerm" ]; then
         fail "session run sends command to target pane" "non-zero exit"
     fi
 
+    # Test 28: A command longer than the tty line limit still runs in a fresh pane
+    pane5=$("$SHIM_DIR/bin/it2" session split -v 2>/dev/null | awk '{print $NF}')
+    marker="$WEZCLD_STATE/long-run-marker"
+    pad=$(printf '%01100d' 0)
+    "$SHIM_DIR/bin/it2" session run -s "$pane5" "true $pad && touch $marker" >/dev/null 2>&1
+    i=0
+    while [ ! -f "$marker" ] && [ "$i" -lt 20 ]; do sleep 0.5; i=$((i + 1)); done
+    if [ -f "$marker" ]; then
+        pass "session run executes a command over 1024 bytes"
+    else
+        fail "session run executes a command over 1024 bytes" "marker not created"
+    fi
+    wezterm cli kill-pane --pane-id "$pane5" 2>/dev/null || true
+
     # Clean up all created panes
     wezterm cli kill-pane --pane-id "$pane1" 2>/dev/null || true
     wezterm cli kill-pane --pane-id "$pane2" 2>/dev/null || true
